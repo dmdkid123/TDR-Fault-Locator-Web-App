@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TDR Fault Locator</title>
+<meta name="tdr-build" content="7">
+<link rel="stylesheet" href="css/style.css?v=7">
+<script>
+  // Apply the saved theme before first paint to avoid a flash.
+  try { var t = localStorage.getItem('tdr.theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+</script>
+</head>
+<body>
+<div class="shell">
+  <header class="top">
+    <div class="brand">
+      <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true">
+        <rect x="1" y="1" width="32" height="32" rx="7" fill="#0a0f14"/>
+        <path d="M5 22h7V10h6v9h3v-4h2v4h6" fill="none" stroke="#f5c518" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+        <path d="M5 26h24" stroke="#2a3a49" stroke-width="1.5"/>
+      </svg>
+      <div><h1>TDR Fault Locator</h1><p>Finds wiring faults in 120 &Omega; harnesses</p></div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button class="tab-btn" role="tab" data-tab="measure" aria-selected="true">
+        <svg viewBox="0 0 24 24"><path d="M3 15l4-6 4 9 4-12 3 9h3"/></svg>Measure</button>
+      <button class="tab-btn" role="tab" data-tab="locator" aria-selected="false">
+        <svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>3D locator</button>
+      <button class="tab-btn" role="tab" data-tab="demo" aria-selected="false">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 8.5l6 3.5-6 3.5v-7z"/></svg>Demo</button>
+      <button class="tab-btn" role="tab" data-tab="setup" aria-selected="false">
+        <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>Setup</button>
+    </nav>
+    <div class="status">
+      <span class="chip" id="chipDev"><i></i><span>No device</span></span>
+      <span class="chip hide-s" id="chipNet">Circuit <b id="chipNetName">-</b></span>
+      <span class="chip hide-s" id="chipVp">Velocity <b class="num" id="chipVpVal">0.66</b></span>
+      <button class="icon-btn" id="themeBtn" title="Switch light or dark theme" aria-label="Switch light or dark theme">
+        <svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 019.5 4 8 8 0 1020 14.5z"/></svg></button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ============================ MEASURE ============================ -->
+    <section class="tab active" id="tab-measure" role="tabpanel">
+      <div class="measure">
+        <aside>
+          <div class="card">
+            <header><h2>Device</h2></header>
+            <div class="body">
+              <div class="devstate" id="devState"><span class="dot"></span><div><strong id="devName">Not connected</strong><span id="devSub">Connect the TDR board or load a scope file.</span></div></div>
+              <div class="stack" id="devButtons">
+                <button class="btn primary block" id="btnConnect">
+                  <svg viewBox="0 0 24 24"><path d="M12 3v12M8 7l4-4 4 4"/><rect x="7" y="15" width="10" height="6" rx="1.5"/></svg>Connect USB device</button>
+                <button class="btn block" id="btnVirtual">Use virtual device</button>
+                <button class="btn primary block" id="btnCapture" hidden>Capture</button>
+                <button class="btn block" id="btnLive" hidden title="Keep measuring and update the trace and the result continuously">Start live view</button>
+                <button class="btn block" id="btnDisconnect" hidden>Disconnect</button>
+              </div>
+              <div id="virtBox" hidden>
+                <div class="sep">Simulated fault</div>
+                <div class="field"><label for="vKind">Type</label>
+                  <select id="vKind"><option value="none">No fault (healthy)</option><option value="open" selected>Open circuit</option><option value="short">Short circuit</option><option value="resistive">Resistive short</option><option value="highz">High resistance</option></select></div>
+                <div class="field" id="vBranchField" hidden><label for="vBranch">On the branch to</label><select id="vBranch"></select></div>
+                <div class="field"><label for="vDist">Distance <span class="num" id="vDistVal">1.90</span> m</label><input type="range" id="vDist" min="0.4" max="4" step="0.01" value="1.9"></div>
+                <div class="field"><label for="vNoise">Noise (V)</label><input type="number" id="vNoise" min="0" step="0.002" value="0.004"></div>
+                <div class="field"><label for="vConn">Connector reflection</label><input type="checkbox" id="vConn" checked></div>
+              </div>
+              <div class="sep">or</div>
+              <div class="stack">
+                <button class="btn block" id="btnCsv">Open scope CSV</button>
+                <button class="btn block" id="btnRef">Add known-good reference</button>
+                <button class="btn block" id="btnRefCap" title="Take the trace on screen as the healthy reference for this circuit">Use this capture as reference</button>
+                <button class="btn block" id="btnRefClear" hidden>Remove reference</button>
+                <span class="hint" id="refState">A reference trace from a healthy harness removes normal connector and splice reflections.</span>
+              </div>
+              <div class="drop" id="drop">Drop a CSV file here</div>
+              <input type="file" id="fileCsv" accept=".csv,.txt,text/csv,text/plain" hidden>
+              <input type="file" id="fileRef" accept=".csv,.txt,text/csv,text/plain" hidden>
+              <p class="err" id="devErr" role="alert"></p>
+              <details class="log" id="devLogBox"><summary>Board log <span class="hint" id="devStats"></span></summary><div id="devLog"><div class="hint">Messages from the board and the connection appear here.</div></div></details>
+            </div>
+          </div>
+
+          <div class="card">
+            <header><h2>Circuit under test</h2></header>
+            <div class="body">
+              <div class="field"><label for="selNet">Circuit</label><select id="selNet"></select></div>
+              <div class="field"><label for="qVp">Velocity factor</label><input type="number" id="qVp" min="0.3" max="1" step="0.01"></div>
+              <div class="field"><label for="qScale">Time stretch</label><input type="number" id="qScale" min="1" step="1"></div>
+              <p class="hint">Time stretch is 100000 for the 1 MHz / 10 Hz equivalent-time sampler and 1 for a real-time capture. More options are in Setup.</p>
+            </div>
+          </div>
+        </aside>
+
+        <div>
+          <div class="card scopecard">
+            <header>
+              <h2>Reflection trace</h2>
+              <span class="sp"></span>
+              <div class="seg" role="group" aria-label="Trace units">
+                <button id="mRho" aria-pressed="true">Reflection</button><button id="mVolt" aria-pressed="false">Volts</button>
+              </div>
+              <button class="btn" id="btnResetZoom" style="height:28px">Reset zoom</button>
+            </header>
+            <div class="body">
+              <div class="scopewrap" id="scopeWrap">
+                <canvas id="scope" aria-label="TDR trace: reflection coefficient against distance from the test point"></canvas>
+                <div class="empty" id="scopeEmpty">
+                  <p>No capture yet. Connect the device, open a scope file, or run the virtual device to see a trace.</p>
+                  <button class="btn primary" id="btnFirstRun">Run virtual capture</button>
+                </div>
+              </div>
+            </div>
+            <div class="legend" id="legend">
+              <span><i style="background:var(--trace)"></i>Measured</span>
+              <span><i style="background:var(--ref)"></i>Known-good reference</span>
+              <span><i style="background:var(--cmp)"></i>Compared capture</span>
+              <span><i style="background:var(--open)"></i>Fault</span>
+              <span><i style="background:var(--feat)"></i>Minor feature</span>
+              <span><i style="background:var(--eol)"></i>Expected end of line</span>
+              <span class="hint">Scroll to zoom, drag to pan, double-click to reset.</span>
+            </div>
+          </div>
+
+          <div class="card results" id="results">
+            <div class="verdict clean" id="verdict">
+              <div>
+                <h3>Waiting for a measurement</h3>
+                <p>The result and its position on the vehicle appear here.</p>
+              </div>
+            </div>
+            <div id="tableWrap"></div>
+          </div>
+
+          <div class="card" id="histCard" hidden>
+            <header><h2>History</h2><span class="hint">Last 12 captures, kept until the page is closed</span><span class="sp"></span><button class="btn" id="btnHistClear" style="height:28px">Clear</button></header>
+            <div id="histList"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 3D LOCATOR ============================ -->
+    <section class="tab" id="tab-locator" role="tabpanel">
+      <div class="locator" id="locator">
+        <canvas id="gl" aria-label="3D view of the wire harness with the fault location marked"></canvas>
+        <div class="lbls" id="lbls"></div>
+        <div class="camtools">
+          <button class="btn" id="cFault">Go to fault</button>
+          <button class="btn" id="cHarn">Frame wiring</button>
+          <button class="btn" id="cCar">Frame vehicle</button>
+          <button class="btn" id="cTop">Top view</button>
+          <button class="btn" id="cSide">Side view</button>
+        </div>
+        <div class="sidepanel">
+          <div class="card">
+            <header><h2>Where to look</h2></header>
+            <div class="body" id="locList"><p class="hint">Take a measurement and the fault location is marked here.</p></div>
+          </div>
+          <div class="card">
+            <header><h2>Display</h2></header>
+            <div class="body">
+              <div class="field"><label for="oOp">Vehicle body</label><input type="range" id="oOp" min="0" max="0.7" step="0.01" value="0.30"></div>
+              <div class="field"><label for="oTh">Wire thickness</label><input type="range" id="oTh" min="0.4" max="4" step="0.1" value="1"></div>
+              <div class="field"><label for="oLb">Labels</label><input type="checkbox" id="oLb" checked></div>
+              <div class="field"><label for="oZone">Search zone &plusmn; <span class="num" id="oZoneVal">75</span> mm</label><input type="range" id="oZone" min="10" max="300" step="5" value="75"></div>
+              <p class="hint" id="meshNote"></p>
+            </div>
+          </div>
+        </div>
+        <div class="hintbar">Drag to orbit, right-drag or Shift+drag to pan, scroll to zoom.</div>
+      </div>
+    </section>
+
+    <!-- ============================ DEMO ============================ -->
+    <section class="tab" id="tab-demo" role="tabpanel">
+      <div class="demo">
+        <div>
+          <div class="scen" id="scen" role="group" aria-label="Demo scenarios"></div>
+          <div class="pipe" id="pipe"></div>
+          <div class="stagebox">
+            <div class="cv"><span class="cap" id="capWire"></span><canvas id="cvWire"></canvas></div>
+            <div class="cv"><span class="cap" id="capScope"></span><canvas id="cvScope"></canvas></div>
+          </div>
+          <div class="transport">
+            <button class="btn" id="dPrev">Previous</button>
+            <button class="btn primary" id="dPlay">Play</button>
+            <button class="btn" id="dNext">Next step</button>
+            <button class="btn" id="dRestart">Restart</button>
+            <div class="seg" role="group" aria-label="Playback speed">
+              <button data-speed="0.5" aria-pressed="false">0.5&times;</button><button data-speed="1" aria-pressed="true">1&times;</button><button data-speed="2" aria-pressed="false">2&times;</button>
+            </div>
+            <span class="sp"></span>
+            <button class="btn" id="dToMeasure">Open in Measure</button>
+            <button class="btn" id="dToCar">Show on car</button>
+          </div>
+        </div>
+        <aside class="card explain"><div class="body" id="explain"></div></aside>
+      </div>
+    </section>
+
+    <!-- ============================ SETUP ============================ -->
+    <section class="tab" id="tab-setup" role="tabpanel">
+      <div class="setup">
+        <div class="card">
+          <header><h2>Measurement</h2></header>
+          <div class="body">
+            <div class="field"><label for="sVp">Velocity factor</label><input type="number" id="sVp" min="0.3" max="1" step="0.005"><small>Fraction of the speed of light on this wire. Calibrate it below on a known length.</small></div>
+            <div class="field"><label for="sZ0">Harness impedance (&Omega;)</label><input type="number" id="sZ0" min="20" step="1"></div>
+            <div class="field"><label for="sRise">Edge rise time (ns)</label><input type="number" id="sRise" min="0.1" step="0.1"><small>Sets the smoothing and the smallest feature spacing: about 10 cm at 1 ns.</small></div>
+            <div class="field"><label for="sMin">Smallest step to report</label><input type="number" id="sMin" min="0.01" max="0.5" step="0.01"></div>
+            <div class="field"><label for="sFault">Fault threshold</label><input type="number" id="sFault" min="0.05" max="0.9" step="0.01"><small>Steps smaller than this are listed as minor features such as connectors or splices.</small></div>
+            <div class="field"><label for="sScale">Time stretch</label><input type="number" id="sScale" min="1" step="1"></div>
+            <div class="field"><label for="sZone">Search zone &plusmn; (mm)</label><input type="number" id="sZone" min="5" step="5"></div>
+            <div class="field"><label for="sAdj">Re-analyze on change</label><input type="checkbox" id="sAdj" checked></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <header><h2>Calibrate velocity factor</h2></header>
+          <div class="body">
+            <div class="field"><label for="cType">Wire type</label><select id="cType"></select><small>Saved calibrations. Picking one sets the velocity factor.</small></div>
+            <ol class="steps">
+              <li>Connect a spare length of the same wire to the board and leave the far end open (not connected to anything).</li>
+              <li><div class="field"><label for="cLen">Measure its length (m)</label><input type="number" id="cLen" min="0.2" step="0.01" value="3.00"></div></li>
+              <li><div class="stack"><button class="btn primary" id="btnCalCap">Capture and calibrate</button><button class="btn" id="btnCal">Use the last capture instead</button></div></li>
+            </ol>
+            <p class="hint" id="calOut"></p>
+            <div class="stack" id="calSave" hidden style="grid-template-columns:1fr auto auto;align-items:center">
+              <input type="text" id="cName" placeholder="Name this wire type, e.g. 18 AWG twisted pair" aria-label="Wire type name">
+              <button class="btn" id="btnTypeSave">Save</button><button class="btn" id="btnCalUndo">Undo</button>
+            </div>
+            <div class="stack"><button class="btn" id="btnTypeDel" hidden>Delete the selected wire type</button></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <header><h2>Device connection</h2></header>
+          <div class="body">
+            <div class="field"><label for="dProto">Board protocol</label><select id="dProto"><option value="sweep">Binary sweep packets (ESP32 firmware)</option><option value="text">Text lines (time,value)</option></select></div>
+            <div class="field"><label for="dAvg">Sweeps to average</label><input type="number" id="dAvg" min="1" max="64" step="1"><small>Binary protocol only. The board sends 10 sweeps per second, so 4 takes about 0.4 s and cuts noise by half.</small></div>
+            <div class="field"><label for="dInt">Sample interval (&micro;s)</label><input type="number" id="dInt" min="0.1" step="0.1"><small>Binary protocol only. Real time between ADC samples (SAMPLE_INTERVAL_US, 100). With the 100,000&times; stretch this is 1 ns per sample.</small></div>
+            <div class="field"><label for="dBaud">Baud rate</label><input type="number" id="dBaud" min="1200" step="100"></div>
+            <div class="field"><label for="dCmd">Capture command</label><input type="text" id="dCmd" style="width:112px"><small>Text protocol only. Sent to the board when you press Capture. The binary protocol sends S to start and I to stop by itself.</small></div>
+            <div class="field"><label for="dVal">Samples are</label><select id="dVal"><option value="volts">Volts</option><option value="counts">ADC counts</option></select></div>
+            <div class="field"><label for="dBits">ADC bits</label><input type="number" id="dBits" min="8" max="24" step="1"></div>
+            <div class="field"><label for="dVref">ADC reference (V)</label><input type="number" id="dVref" min="0.1" step="0.1"></div>
+            <div class="field"><label for="dDt">Sample interval (&micro;s)</label><input type="number" id="dDt" min="0.001" step="0.1"><small>Only used when the board sends one value per line. This is the spacing on the stretched waveform.</small></div>
+            <div class="field"><label for="dUnit">Time column unit</label><select id="dUnit"><option value="auto">Detect</option><option value="s">Seconds</option><option value="ms">Milliseconds</option><option value="us">Microseconds</option><option value="ns">Nanoseconds</option></select></div>
+            <p class="hint">Text protocol accepts lines: <code>time,value</code> or a single <code>value</code> per line, between optional <code>START</code> and <code>END</code> lines.</p>
+          </div>
+        </div>
+
+        <div class="card span2">
+          <header><h2>Harness model</h2><span class="sp"></span>
+            <button class="btn" id="btnHarnessFile" style="height:30px">Open JSON file</button>
+            <button class="btn" id="btnHarnessReset" style="height:30px">Restore example</button></header>
+          <div class="body">
+            <p class="hint" style="margin-bottom:8px">Nodes and wire routes in millimetres, one entry per circuit. Export these from the 3D CAD. Changes apply when you press Apply.</p>
+            <textarea id="harnessText" spellcheck="false" aria-label="Harness JSON"></textarea>
+            <div class="stack" style="grid-template-columns:auto 1fr;align-items:center;margin-top:8px"><button class="btn primary" id="btnHarnessApply">Apply</button><span class="err" id="harnessErr"></span></div>
+            <input type="file" id="fileHarness" accept=".json,application/json" hidden>
+          </div>
+        </div>
+
+        <div class="card">
+          <header><h2>Vehicle body</h2></header>
+          <div class="body">
+            <p class="hint">The 3D view shows a placeholder body. Load a binary or ASCII STL exported from the vehicle CAD, in millimetres and the same coordinate frame as the harness.</p>
+            <div class="stack" style="margin-top:10px">
+              <button class="btn" id="btnMesh">Load STL</button>
+              <button class="btn" id="btnMeshReset">Use placeholder body</button>
+              <button class="btn" id="btnMeshNone">Hide body</button>
+            </div>
+            <input type="file" id="fileMesh" accept=".stl" hidden>
+            <p class="hint" id="meshInfo" style="margin-top:8px"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast" hidden role="status"></div>
+<div id="printReport"></div>
+
+<script src="js/harness_data.js?v=7"></script>
+<script src="js/tdr.js?v=7"></script>
+<script src="js/chart.js?v=7"></script>
+<script src="js/device.js?v=7"></script>
+<script src="js/carmesh.js?v=7"></script>
+<script src="js/viewer.js?v=7"></script>
+<script src="js/demo.js?v=7"></script>
+<script src="js/app.js?v=7"></script>
+</body>
+</html>
