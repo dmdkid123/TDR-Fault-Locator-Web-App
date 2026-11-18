@@ -12,7 +12,7 @@
   const DEFAULTS = { vp: 0.66, z0: 120, rise: 1, minStep: 0.05, faultThr: 0.25, scale: 100000, zone: 75, proto: 'sweep', baud: 921600, avg: 4, interval: 100, cmd: 'MEASURE', valueMode: 'volts', bits: 12, vref: 3.3, dt: 1, timeUnit: 'auto', reanalyze: true };
   const saved = store.get('cfg', {}); if (saved && !saved.proto) { delete saved.baud; delete saved.cmd; delete saved.dt; }   // settings from before the binary-sweep protocol
   const S = { cfg: Object.assign({}, DEFAULTS, saved), harness: null, netName: null, net: null, raw: null, ref: null, cmp: null, label: '', result: null, dev: null, meshInfo: '', live: false, hist: [], log: [], calPending: false };
-  const BUILD = '7';   // must match <meta name="tdr-build"> in index.html
+  const BUILD = '8';   // must match <meta name="tdr-build"> in index.html
   const SAMPLE = window.TDR_HARNESS;
 
   /* ---------------------------------------------------------------- small helpers */
@@ -285,7 +285,7 @@
   function renderStats() {
     const el = $('devStats'); if (!el) return;
     const st = S.dev && S.dev.type === 'serial' && S.dev.obj.stats ? S.dev.obj.stats() : null;
-    el.textContent = st && (st.good || st.bad || st.dropped) ? '(' + st.good.toLocaleString() + ' sweeps OK, ' + st.bad + ' checksum failures, ' + st.dropped + ' overruns dropped)' : '';
+    el.textContent = st && (st.good || st.bad) ? '(' + st.used.toLocaleString() + ' of ' + st.good.toLocaleString() + ' sweeps used, ' + st.overruns + ' overruns, ' + st.dropped + ' dropped, ' + st.bad + ' checksum failures' + (st.skippedIds ? ', ' + st.skippedIds + ' lost' : '') + ')' : '';
   }
 
   /* ---------------------------------------------------------------- device */
@@ -323,7 +323,7 @@
   async function connectSerial() {
     $('devErr').textContent = '';
     if (!D.serialSupported()) { $('devErr').textContent = 'This browser cannot open USB serial ports. Use Chrome or Edge, or open a scope CSV.'; return; }
-    const obj = new D.SerialDevice({ onCapture: (t) => { ingest(t, obj.name, S.cfg.proto === 'sweep'); renderStats(); }, onProgress: (n) => setCapturing(true, n), onError: (m) => { $('devErr').textContent = m; setCapturing(false); log(m, 'bad'); if (S.calPending) { S.calPending = false; $('calOut').textContent = m; } }, onWarning: (m) => { $('devErr').textContent = m; log(m, 'warn'); }, onLog: (l) => log('Board: ' + l, /^ERR/i.test(l) ? 'bad' : /^WARN/i.test(l) ? 'warn' : ''), onClosed: () => { if (S.dev && S.dev.obj === obj) { S.live = false; setDevice(null); log('The port closed (unplugged?)', 'bad'); } } });
+    const obj = new D.SerialDevice({ onCapture: (t) => { ingest(t, obj.name, S.cfg.proto === 'sweep'); renderStats(); }, onProgress: (n) => setCapturing(true, n), onError: (m) => { $('devErr').textContent = m; setCapturing(false); log(m, 'bad'); if (S.calPending) { S.calPending = false; $('calOut').textContent = m; } }, onWarning: (m) => { $('devErr').textContent = m; log(m, 'warn'); }, onInfo: (m) => log(m), onLog: (l) => log('Board: ' + l, /^ERR/i.test(l) ? 'bad' : /^WARN/i.test(l) ? 'warn' : ''), onClosed: () => { if (S.dev && S.dev.obj === obj) { S.live = false; setDevice(null); log('The port closed (unplugged?)', 'bad'); } } });
     try { await obj.connect(S.cfg.baud, S.cfg.proto); setDevice({ type: 'serial', name: obj.name, obj }); log('Connected to ' + obj.name + ' at ' + S.cfg.baud + ' baud'); }
     catch (e) { $('devErr').textContent = e && e.name === 'NotFoundError' ? 'No device was selected.' : (e.message || String(e)); if (!(e && e.name === 'NotFoundError')) log($('devErr').textContent, 'bad'); }
   }

@@ -48,6 +48,34 @@ let got = null; // ---- binary sweep packets from the ESP32 firmware
   }
   ok(allOk, 'sweep rotation: launch edge found wherever the sweep starts, open at 20 ns reads 1.98 m');
 }
+// ---- A1-A3: sweep alignment, missed= parsing, per-capture summary
+{
+  const pk = (samples, id) => { const n = samples.length, b = Buffer.alloc(8 + n * 2 + 2); b.writeUInt16LE(0xAA55, 0); b.writeUInt16LE(n, 2); b.writeUInt32LE(id, 4); samples.forEach((v, k) => b.writeUInt16LE(v, 8 + k * 2)); b.writeUInt16LE(D.crc16(new Uint8Array(b), 8, n * 2), 8 + n * 2); return b; };
+  const sw = (L, bump) => Array.from({ length: 1000 }, (_, i) => { const k = ((i - L) % 1000 + 1000) % 1000; return (k < 500 ? (k >= 20 ? 2900 : 1500) : 500) + (bump || 0); });
+  const runCap = (plan) => {
+    const info = []; let out = null; const dev = new D.SerialDevice({ onCapture: (t) => { out = t; }, onInfo: (m) => info.push(m), onWarning: () => {}, onError: () => {} });
+    dev.port = { writable: true }; dev._send = async () => {};
+    dev.opt = {}; dev.sweeps = []; dev._resetCounts(); dev.want = 4;
+    let id = 0; for (const s of plan) { id += 1 + (s.skip || 0); if (s.warn) dev.parser.push(new Uint8Array(Buffer.from(s.warn + '\r\n'))); dev.parser.push(new Uint8Array(pk(sw(s.L, s.bump), id))); if (out) break; }
+    return { out, info: info.join(' / '), dev };
+  };
+  let r = runCap([{ L: 300 }, { L: 301 }, { L: 299 }, { L: 301 }]);
+  ok(r.out && /Used 4 of 4/.test(r.info), 'A1: launch wobble of 1 sample is aligned and kept');
+  r = runCap([{ L: 300 }, { L: 305 }, { L: 300 }, { L: 300 }, { L: 300 }]);
+  ok(/Used 4 of 5/.test(r.info) && /launch moved 5/.test(r.info), 'A1: sweep 5 samples off is dropped');
+  r = runCap([{ L: 300 }, { L: 300, bump: 400 }, { L: 300 }, { L: 300 }, { L: 300 }]);
+  ok(/Used 4 of 5/.test(r.info) && /baseline jumped/.test(r.info), 'A1: baseline jump is dropped');
+  r = runCap([{ L: 300 }, { L: 300, warn: 'WARN: SAMPLER_OVERRUN idx=120 missed=2' }, { L: 300 }, { L: 300 }]);
+  ok(/Used 4 of 4/.test(r.info) && /1 overrun \(last idx 120\)/.test(r.info), 'A2: missed=2 is kept, idx logged');
+  r = runCap([{ L: 300 }, { L: 300, warn: 'WARN: SAMPLER_OVERRUN idx=310 missed=3' }, { L: 300 }, { L: 300 }, { L: 300 }]);
+  ok(/Used 4 of 5/.test(r.info) && /dropped for missed ticks/.test(r.info), 'A2: missed=3 is dropped');
+  r = runCap([{ L: 300 }, { L: 300, warn: 'WARN: SAMPLER_OVERRUN' }, { L: 300 }, { L: 300 }, { L: 300 }]);
+  ok(/Used 4 of 5/.test(r.info), 'A2: old warning without a count is still dropped');
+  r = runCap([{ L: 300 }, { L: 300, skip: 2 }, { L: 300 }, { L: 300 }]);
+  ok(/2 sweep IDs never arrived/.test(r.info), 'A3: gaps in sweep IDs are counted');
+  r = runCap([{ L: 998 }, { L: 999 }, { L: 0 }, { L: 997 }]);
+  ok(r.out && /Used 4 of 4/.test(r.info), 'A1: alignment works when the launch edge wraps round the window');
+}
 const asm = new D.LineAssembler({ onCapture: (t) => { got = t; } }, { idleMs: 30, minLines: 50 });
 asm.push('boot v1.2'); asm.push('START'); for (let i = 0; i < 120; i++) asm.push(i + ',' + i); asm.push('END');
 ok(got && got.split('\n').length === 120, 'serial assembler: START ... END gives 120 lines, chatter ignored');

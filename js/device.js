@@ -114,6 +114,43 @@
     }
   }
 
+  /** Launch edge of one sweep (or an averaged one): the rising edge that ends the longest low stretch, found circularly
+   *  because the 1 MHz pulse train repeats exactly once per sweep window. The biggest rising edge would be wrong, since
+   *  the echo of an open circuit is as big as the launch edge. -> {idx, lo, hi} or null for a flat sweep. */
+  function sweepLaunch(v, minSwing) {
+    const n = v.length, sorted = Float64Array.from(v).sort(), lo = sorted[Math.floor(n * 0.02)], hi = sorted[Math.floor(n * 0.98)];
+    if (!(hi - lo > (minSwing || 0))) return null;
+    const thr = lo + 0.2 * (hi - lo);
+    let best = 0, bestEnd = -1, run = 0;
+    for (let i = 0; i < 2 * n; i++) { if (v[i % n] < thr) { run++; if (run > best && run <= n) { best = run; bestEnd = (i + 1) % n; } } else run = 0; }
+    return bestEnd >= 0 && best < n ? { idx: bestEnd, lo, hi } : null;
+  }
+
+  /** A1: compare one raw sweep with the reference sweep of this capture and rotate it so its launch edge lands on the
+   *  reference's launch index. Rejected when the launch moved more than maxShift samples, or the baseline or step size
+   *  jumped by more than tol of the step. -> {ok, sweep, shift, reason, launch} */
+  function alignSweep(samples, ref, o) {
+    o = Object.assign({ maxShift: 2, tol: 0.15 }, o || {});
+    const L = sweepLaunch(samples, 20);                    // 20 counts: ignore a sweep with no pulse in it
+    if (!L) return { ok: false, reason: 'no launch edge' };
+    const n = samples.length, base = median16(samples, L.idx, -Math.min(200, Math.floor(n / 4)), -10), top = median16(samples, L.idx, 10, Math.min(200, Math.floor(n / 4)));
+    const launch = { idx: L.idx, base, step: top - base };
+    if (!ref) return { ok: true, sweep: samples, shift: 0, launch };
+    let shift = L.idx - ref.idx; if (shift > n / 2) shift -= n; if (shift < -n / 2) shift += n;
+    if (Math.abs(shift) > o.maxShift) return { ok: false, shift, reason: 'launch moved ' + shift + ' samples', launch };
+    const step = Math.abs(ref.step) || 1;
+    if (Math.abs(base - ref.base) > o.tol * step) return { ok: false, shift, reason: 'baseline jumped ' + Math.round(base - ref.base) + ' counts', launch };
+    if (Math.abs(launch.step - ref.step) > o.tol * step) return { ok: false, shift, reason: 'step size changed ' + Math.round(launch.step - ref.step) + ' counts', launch };
+    if (shift === 0) return { ok: true, sweep: samples, shift, launch };
+    const r = new Uint16Array(n); for (let i = 0; i < n; i++) r[i] = samples[((i + shift) % n + n) % n];
+    return { ok: true, sweep: r, shift, launch };
+  }
+  /** Median of samples[k + a .. k + b) taken circularly. */
+  function median16(s, k, a, b) {
+    const n = s.length, out = []; for (let i = a; i < b; i++) out.push(s[((k + i) % n + n) % n]);
+    out.sort((x, y) => x - y); return out.length ? out[out.length >> 1] : 0;
+  }
+
   /** Averages sweeps and turns ADC counts into the "time,volts" text that parseCapture() reads.
    *  The sweep starts at the 10 Hz beat, which can fall anywhere in the pulse, but the pulse train is periodic
    *  (1 MHz = exactly one sweep window), so the sweep is rotated to put flat baseline before the launch edge.
@@ -125,12 +162,10 @@
     const n = sweeps[0].length, full = Math.pow(2, o.bits) - 1;
     let v = new Float64Array(n);
     for (let i = 0; i < n; i++) { let a = 0; for (const s of sweeps) a += s[i]; v[i] = a / sweeps.length / full * o.vref; }
-    const sorted = Float64Array.from(v).sort(), lo = sorted[Math.floor(n * 0.02)], hi = sorted[Math.floor(n * 0.98)];
-    if (hi - lo > 0.05 && o.rotate !== false) {
-      const thr = lo + 0.2 * (hi - lo);
-      let best = 0, bestEnd = -1, run = 0;                  // longest circular run below thr; it ends at the launch edge
-      for (let i = 0; i < 2 * n; i++) { if (v[i % n] < thr) { run++; if (run > best && run <= n) { best = run; bestEnd = (i + 1) % n; } } else run = 0; }
-      if (bestEnd >= 0 && best < n) {
+    const L = o.rotate !== false ? sweepLaunch(v, 0.05) : null;
+    if (L) {
+      const bestEnd = L.idx;
+      {
         const shift = ((bestEnd - o.lead) % n + n) % n, r = new Float64Array(n);
         for (let i = 0; i < n; i++) r[i] = v[(i + shift) % n];
         v = r.slice(0, Math.max(100, Math.min(n, o.lead + Math.round(n * o.duty) - 10)));
@@ -146,6 +181,7 @@
   class SerialDevice {
     constructor(cb) {
       this.cb = cb; this.port = null; this.reader = null; this.name = ''; this._stop = false; this.mode = 'sweep'; this.want = 0; this.sweeps = [];
+      this._resetCounts(); this.tot = { recv: 0, used: 0, dropped: 0, overruns: 0, skippedIds: 0 }; this.lastId = null; this.lastIdx = null;
       this.asm = new LineAssembler({ onCapture: (t) => { clearTimeout(this.wait); cb.onCapture(t); }, onProgress: (n) => cb.onProgress && cb.onProgress(n) });
       this.parser = new SweepParser({ onSweep: (s, id) => this._onSweep(s, id), onText: (l) => this._onStatus(l) });
     }
@@ -163,7 +199,7 @@
         if (e && e.name === 'NetworkError') throw new Error('The port could not be opened. Close anything else using it (Arduino serial monitor, PuTTY, another browser tab), unplug and replug the board, then try again.');
         throw e;
       }
-      this.port = port; this._stop = false; this.errors = 0; this.want = 0; this.parser.reset(); openDevices.add(this);
+      this.port = port; this._stop = false; this.errors = 0; this.want = 0; this.lastId = null; this.parser.reset(); openDevices.add(this);
       const info = port.getInfo ? port.getInfo() : {};
       this.name = info.usbVendorId ? 'USB device ' + info.usbVendorId.toString(16).padStart(4, '0') + ':' + (info.usbProductId || 0).toString(16).padStart(4, '0') : 'Serial device';
       this._loopDone = this._loop();
@@ -200,31 +236,70 @@
       const w = this.port.writable.getWriter(); try { await w.write(new TextEncoder().encode(text)); } finally { w.releaseLock(); }
     }
     _onStatus(line) {
-      if (this.cb.onLog) this.cb.onLog(line);
+      // overrun lines are counted in the per-capture summary (A3); logging each one would bury everything else
+      if (this.cb.onLog && !/SAMPLER_OVERRUN/.test(line)) this.cb.onLog(line);
       if (/^ERR/i.test(line)) { this._endCapture(); if (this.cb.onError) this.cb.onError('The board reports: ' + line + (/SI5351/.test(line) ? '. The clock chip is not answering on I2C (SDA GPIO21, SCL GPIO22). Check its wiring and power.' : '')); }
       else if (/NO_SWEEP_SYNC/.test(line) && this.cb.onWarning) this.cb.onWarning('The board sees no sweep sync on GPIO27 (the 10 Hz beat signal). Check the sync wiring from the sampler.');
-      else if (/SAMPLER_OVERRUN/.test(line)) { this.skipNext = true; }       // the sweep that follows this line is damaged: drop it
+      else if (/SAMPLER_OVERRUN/.test(line)) {
+        // The firmware prints this just before the damaged sweep's packet. New firmware says how many ticks it missed:
+        // "WARN: SAMPLER_OVERRUN idx=<n> missed=<k>". Keep the sweep when k <= MAX_MISSED. Old firmware gives no count, so drop.
+        const m = /SAMPLER_OVERRUN(?:\s+idx=(-?\d+))?(?:\s+missed=(\d+))?/.exec(line), missed = m && m[2] != null ? +m[2] : null;
+        this.cnt.overruns++; this.tot.overruns++; if (m && m[1] != null) this.lastIdx = +m[1];
+        if (missed !== null) this.cnt.missed += missed;
+        this.skipNext = missed === null || missed > SerialDevice.MAX_MISSED;
+      }
     }
     _endCapture(sendIdle) {
       const was = this.want > 0; this.want = 0; this.sweeps = []; this.live = false; clearTimeout(this.wait); clearInterval(this.kick);
       if (sendIdle && was) this._send('I').catch(() => {});
     }
-    _onSweep(samples) {
+    _resetCounts() { this.cnt = { recv: 0, used: 0, dropOverrun: 0, dropAlign: 0, overruns: 0, missed: 0, skippedIds: 0 }; this.refL = null; this.badRun = 0; this.lastReason = ''; }
+    /** A3: one line per capture for the board log. */
+    _summary() {
+      const c = this.cnt; if (!c || !c.recv) return '';
+      return 'Used ' + c.used + ' of ' + c.recv + ' sweeps, ' + c.overruns + ' overrun' + (c.overruns === 1 ? '' : 's') + (this.lastIdx != null ? ' (last idx ' + this.lastIdx + ')' : '') +
+        (c.dropOverrun ? ', ' + c.dropOverrun + ' dropped for missed ticks' : '') + (c.dropAlign ? ', ' + c.dropAlign + ' dropped for misalignment' + (this.lastReason ? ' (' + this.lastReason + ')' : '') : '') +
+        (c.skippedIds ? ', ' + c.skippedIds + ' sweep IDs never arrived' : '');
+    }
+    _info(m) { if (m && this.cb.onInfo) this.cb.onInfo(m); }
+    _onSweep(samples, id) {
       this.lastSweep = Date.now();
-      if (!this.want) return;                               // not asked for: ignore a leftover sweep
-      if (this.skipNext) {
-        this.skipNext = false; this.dropped = (this.dropped || 0) + 1; this.droppedTotal = (this.droppedTotal || 0) + 1;
-        if (this.live || this.dropped <= 8) return;                      // discard it; keep going so the average only uses clean sweeps
-        if (this.cb.onWarning) this.cb.onWarning('The board keeps reporting SAMPLER_OVERRUN, so some sweeps are slightly off. Averaging more sweeps helps; if it persists, the firmware is missing sample ticks.');
+      // sweep IDs count up by one; a gap means sweeps were lost between the board and the app
+      if (this.lastId != null && id > this.lastId + 1 && id - this.lastId < 100000) { const k = id - this.lastId - 1; this.tot.skippedIds += k; if (this.want) this.cnt.skippedIds += k; }
+      this.lastId = id;
+      if (!this.want) { this.skipNext = false; return; }      // not asked for: ignore a leftover sweep
+      const c = this.cnt; c.recv++; this.tot.recv++;
+      if (this.skipNext) { this.skipNext = false; c.dropOverrun++; this.tot.dropped++; return this._checkGiveUp(); }
+      // A1: line the sweep up on the launch edge of the first good sweep of this capture
+      const A = alignSweep(samples, this.refL, { maxShift: SerialDevice.MAX_SHIFT });
+      if (!A.ok) {
+        c.dropAlign++; this.tot.dropped++; this.lastReason = A.reason;
+        // several rejects in a row in live view: the circuit itself changed (plugged in, wire moved), so start over from this sweep
+        if (this.live && ++this.badRun >= 5 && A.launch) { this.refL = A.launch; this.sweeps = [samples]; this.badRun = 0; this._info('Live view: the trace changed, restarting the average'); }
+        return this._checkGiveUp();
       }
+      this.badRun = 0; if (!this.refL) this.refL = A.launch;
+      c.used++; this.tot.used++;
       if (this.live) {                                      // live view: rolling average of the last `want` sweeps, one result per sweep
-        this.sweeps.push(samples); while (this.sweeps.length > this.want) this.sweeps.shift();
+        this.sweeps.push(A.sweep); while (this.sweeps.length > this.want) this.sweeps.shift();
         try { this.cb.onCapture(sweepsToText(this.sweeps, this.opt), { live: true }); } catch (e) { /* a bad frame must not stop the stream */ }
+        if (c.recv % 100 === 0) this._info(this._summary());
         return;
       }
-      this.sweeps.push(samples); if (this.cb.onProgress) this.cb.onProgress(this.sweeps.length * samples.length);
+      this.sweeps.push(A.sweep); if (this.cb.onProgress) this.cb.onProgress(this.sweeps.length * samples.length);
       if (this.sweeps.length < this.want) return;
-      const sweeps = this.sweeps, o = this.opt; this._endCapture(true);
+      this._finish();
+    }
+    /** Too many sweeps thrown away for one capture: use what there is, or report why. */
+    _checkGiveUp() {
+      if (this.live) return;
+      const c = this.cnt, limit = 3 * this.want + 10;
+      if (c.recv - c.used < limit) return;
+      if (this.sweeps.length) { if (this.cb.onWarning) this.cb.onWarning('Only ' + this.sweeps.length + ' of ' + this.want + ' sweeps were clean, so this result averages fewer sweeps. See the board log for why.'); this._finish(); }
+      else { const msg = 'Every sweep was rejected. ' + this._summary() + '. Check the GPIO27 sync line and the probe connection.'; this._info(this._summary()); this._endCapture(true); if (this.cb.onError) this.cb.onError(msg); }
+    }
+    _finish() {
+      const sweeps = this.sweeps, o = this.opt, sum = this._summary(); this._endCapture(true); this._info(sum);
       try { this.cb.onCapture(sweepsToText(sweeps, o)); } catch (e) { if (this.cb.onError) this.cb.onError(e.message || String(e)); }
     }
     /** text mode: send cmd + newline, collect lines. sweep mode: send 'S' until a packet arrives, average o.avg sweeps, send 'I'. */
@@ -238,7 +313,7 @@
         this.wait = setTimeout(() => this.cb.onError && this.cb.onError('No data arrived within ' + Math.round(ms / 1000) + ' s. Check the baud rate in Setup and that the board sends lines like "time,value".'), ms);
         return;
       }
-      this.opt = o || {}; this.sweeps = []; this.dropped = 0; this.skipNext = false; this.want = Math.max(1, Math.min(64, Math.round((o && o.avg) || 1)));
+      this.opt = o || {}; this.sweeps = []; this.skipNext = false; this._resetCounts(); this.want = Math.max(1, Math.min(64, Math.round((o && o.avg) || 1)));
       clearTimeout(this.wait); clearInterval(this.kick);
       await this._send('S');
       // Opening the port usually resets an ESP32, and it ignores 'S' until it has finished booting, so keep asking once a second.
@@ -253,7 +328,7 @@
       if (!this.port || !this.port.writable) throw new Error('The port is not open.');
       if (this.mode !== 'sweep') throw new Error('Live view needs the binary sweep protocol.');
       this._endCapture(false);
-      this.opt = o || {}; this.sweeps = []; this.dropped = 0; this.skipNext = false; this.want = Math.max(1, Math.min(64, Math.round((o && o.avg) || 1)));
+      this.opt = o || {}; this.sweeps = []; this.skipNext = false; this._resetCounts(); this.want = Math.max(1, Math.min(64, Math.round((o && o.avg) || 1)));
       this.live = true; this.lastSweep = Date.now(); let warned = false;
       await this._send('S');
       this.kick = setInterval(() => {
@@ -263,8 +338,8 @@
         if (idle < 1500) warned = false;
       }, 1000);
     }
-    async stopLive() { const was = this.live; this._endCapture(false); if (was) await this._send('I').catch(() => {}); }
-    stats() { return { good: this.parser.good, bad: this.parser.bad, dropped: this.droppedTotal || 0 }; }
+    async stopLive() { const was = this.live, sum = this._summary(); this._endCapture(false); if (was) { this._info(sum); await this._send('I').catch(() => {}); } }
+    stats() { const t = this.tot; return { good: this.parser.good, bad: this.parser.bad, used: t.used, dropped: t.dropped, overruns: t.overruns, skippedIds: t.skippedIds }; }
     async disconnect() {
       this._endCapture(false); this._stop = true;
       try { if (this.port && this.port.writable) await this._send('I'); } catch (e) { /* port already gone */ }
@@ -273,6 +348,8 @@
       await this._release();
     }
   }
+  SerialDevice.MAX_MISSED = 2;   // A2: keep a sweep whose overrun warning says it missed at most this many ticks
+  SerialDevice.MAX_SHIFT = 2;    // A1: drop a sweep whose launch edge is more than this many samples from the first one
 
   /** Streams a synthetic equivalent-time capture through the same line path as real hardware. */
   class VirtualDevice {
@@ -294,6 +371,6 @@
     stop() { clearTimeout(this._h); this.asm.reset(); }
   }
 
-  root.TDRDevice = { parseCapture, LineAssembler, SerialDevice, SweepParser, sweepsToText, crc16, VirtualDevice, serialSupported };
+  root.TDRDevice = { parseCapture, LineAssembler, SerialDevice, SweepParser, sweepsToText, sweepLaunch, alignSweep, crc16, VirtualDevice, serialSupported };
   if (typeof module === 'object' && module.exports) module.exports = root.TDRDevice;
 })(typeof window !== 'undefined' ? window : globalThis);
