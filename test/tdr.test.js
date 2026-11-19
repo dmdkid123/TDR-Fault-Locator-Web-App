@@ -101,5 +101,42 @@ ok(/too short/.test(msg), 'short capture gives a readable error');
   }
 }
 
+// Narrow launch pulse (the real board's is about 6 ns wide): the pulse's own falling edge must not be reported as a short,
+// and the open at the end of a 5 ft wire must be the first reflection. Step launches must be unaffected.
+{
+  const erf = (x) => { const s = Math.sign(x); x = Math.abs(x); const t = 1 / (1 + 0.3275911 * x); return s * (1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x)); };
+  const edge = (t, te) => 0.5 * (1 + erf((t - te) / ((1 / 2.563) * Math.SQRT2)));   // 1 ns edge, t in ns
+  const pulseCapture = (d, width, sign, base, amp) => {
+    const n = 570, t = new Float64Array(n), v = new Float64Array(n), rt = T.distanceToTime(d, 0.66) * 1e9;
+    for (let i = 0; i < n; i++) {
+      t[i] = i * 1e-9; let x = base;
+      for (let k = 0; k < 4; k++) { const a = amp * Math.pow(0.92, k) * (k === 0 ? 1 : sign), t1 = 80 + k * rt; x += a * (edge(i, t1) - edge(i, t1 + width)); }
+      v[i] = x;
+    }
+    return { t, v };
+  };
+  for (const width of [4, 6, 8]) {
+    const c = pulseCapture(1.524, width, 1, 0.6, 1.6), r = T.findReflections(c.t, c.v, cfg);
+    ok(r.reflections.length > 0 && r.reflections[0].kind.startsWith('OPEN') && near(r.reflections[0].distance, 1.524, 0.05) && near(r.pulseWidth * 1e9, width, 1.5),
+      `${width} ns launch pulse, open at 5 ft: first reflection ${r.reflections[0] && r.reflections[0].kind.split(' ')[0]} at ${r.reflections[0] && r.reflections[0].distance.toFixed(2)} m, pulse ${r.pulseWidth && (r.pulseWidth * 1e9).toFixed(1)} ns`);
+  }
+  { const c = pulseCapture(1.524, 6, -1, 1.2, 1.0), r = T.findReflections(c.t, c.v, cfg).reflections;
+    ok(r.length > 0 && r[0].kind.startsWith('SHORT') && near(r[0].distance, 1.524, 0.05), `6 ns launch pulse, short at 5 ft: first reflection ${r[0] && r[0].kind.split(' ')[0]} at ${r[0] && r[0].distance.toFixed(2)} m`); }
+  { const c = pulseCapture(1.524, 6, 1, 0.6, 1.6), old = T.findReflections(c.t, c.v, Object.assign({}, cfg, { pulse: false })).reflections;
+    ok(old[0].kind.startsWith('SHORT') && old[0].distance < 1, 'with pulse handling off, the old false short at the pulse end is still what you get (switch works)'); }
+  // Long wire: the echo of a 30 m wire is weaker and stretched, but the false short at the pulse end must still go away and the
+  // first reflection must be the far end, with the right sign (the amplitude is lower, so only the sign is checked here).
+  for (const [sign, label] of [[1, 'open'], [-1, 'short']]) {
+    const n = 570, t = new Float64Array(n), v = new Float64Array(n), rt = T.distanceToTime(30, 0.66) * 1e9;
+    for (let i = 0; i < n; i++) { t[i] = i * 1e-9; v[i] = 1.0 + 1.6 * (edge(i, 80) - edge(i, 86)) + 1.6 * 0.6 * sign * (edge(i, 80 + rt) - edge(i, 80 + rt + 12)); }
+    const r = T.findReflections(t, v, cfg).reflections;
+    ok(r.length > 0 && near(r[0].distance, 30, 0.3) && Math.sign(r[0].delta) === sign, `30 m wire, weak stretched echo, ${label}: first reflection ${r[0] && r[0].distance.toFixed(1)} m, sign ${r[0] && Math.sign(r[0].delta)}`);
+  }
+  for (const [d, a, kind] of [[1.9, 0.97, 'OPEN'], [2.4, -0.97, 'SHORT'], [1.2, -0.97, 'SHORT']]) {
+    const c = T.synthCapture([{ d, a }], cfg, { vStep: 3.3, span: 70e-9, dt: 1e-9, tLaunch: 20e-9, noise: 0.005, seed: 2 }), r = T.findReflections(c.t, c.v, cfg);
+    ok(r.pulseWidth === null && r.reflections.length === 1 && r.reflections[0].kind.startsWith(kind) && near(r.reflections[0].distance, d, 0.03), `step launch, ${kind} at ${d} m: unchanged, no pulse detected`);
+  }
+}
+
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 process.exit(fails ? 1 : 0);

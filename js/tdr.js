@@ -171,7 +171,35 @@
       const c = classify(delta, cfg), rt = tx - t0;
       reflections.push({ t: rt, distance: timeToDistance(rt, cfg.vp), delta, z: c.z, kind: c.kind });
     });
-    return { t0, rho, reflections, base, amp, noise, threshold: thr, dt };
+    const P = cfg.pulse === false ? { reflections, width: null } : dropPulseTails(reflections, cfg.pulse);
+    return { t0, rho, reflections: P.reflections, pulseWidth: P.width, base, amp, noise, threshold: thr, dt };
+  }
+
+  /** Some launches are a NARROW PULSE (the real board's is about 6 ns) instead of a long step. The pulse's own falling
+   *  edge then looks like a short right after the launch, and every echo of the pulse comes back with a trailing edge
+   *  that looks like another fault. A short is recognised by what follows it: nothing comes back up. A pulse is
+   *  recognised the other way round: a full-height drop within maxWidth of the launch, followed by a full-height rise.
+   *  Then the first drop is the end of the launch pulse, and every edge that sits one pulse width after an opposite
+   *  edge of similar size is the tail of that echo, so both are removed. Without that signature nothing is changed.
+   *  o: { maxWidth (s, default 20 ns), minDelta (default 0.8), minRise (default 0.25) }. -> { reflections, width (s) or null } */
+  function dropPulseTails(refl, o) {
+    o = Object.assign({ maxWidth: 20e-9, minDelta: 0.8, minRise: 0.25 }, o && typeof o === 'object' ? o : {});
+    const r = refl.slice().sort((a, b) => a.t - b.t);
+    const f = r.find((x) => x.delta <= -o.minDelta);
+    if (!f || f.t > o.maxWidth) return { reflections: refl, width: null };
+    // The echo of a pulse comes back weaker on a long wire (cable loss), so the rise that proves "this was a pulse" only has to be
+    // clearly there (minRise), not full height. Nothing at all comes back after a real short.
+    if (!r.some((x) => x.t > f.t + 2e-9 && x.delta >= o.minRise)) return { reflections: refl, width: null };
+    const w = f.t, drop = new Set([f]);
+    for (const a of r) {
+      if (drop.has(a) || Math.abs(a.delta) < o.minRise) continue;
+      const tol = Math.max(2e-9, 0.5 * w, 0.04 * a.t);   // a long wire also stretches the echo, so allow more the later it arrives
+      for (const b of r) {
+        if (b === a || drop.has(b) || b.t <= a.t || Math.sign(b.delta) === Math.sign(a.delta)) continue;
+        if (Math.abs(b.delta) >= 0.4 * Math.abs(a.delta) && Math.abs(b.t - a.t - w) <= tol) { drop.add(b); break; }
+      }
+    }
+    return { reflections: r.filter((x) => !drop.has(x)), width: w };
   }
 
   /* ------------------------------------------------------------ harness / geometry */
@@ -346,5 +374,5 @@
 
   return { C0, defaultConfig, etScaleFactor, etStepSeconds, timeToDistance, distanceToTime, calibrateVp, timingNeededFor,
            minFeatureSpacing, gammaFromZ, zFromGamma, classify, kindLabel, findReflections, Net, buildNet, validateHarness,
-           localize, leafEchoes, pickBranch, simEvents, findLaunch, crossing, synthCapture, FAULT_STEPS, interp, resample, median, smooth, mulberry32 };
+           localize, leafEchoes, pickBranch, simEvents, findLaunch, crossing, dropPulseTails, synthCapture, FAULT_STEPS, interp, resample, median, smooth, mulberry32 };
 });
