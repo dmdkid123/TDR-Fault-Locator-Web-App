@@ -76,6 +76,24 @@ let got = null; // ---- binary sweep packets from the ESP32 firmware
   r = runCap([{ L: 998 }, { L: 999 }, { L: 0 }, { L: 997 }]);
   ok(r.out && /Used 4 of 4/.test(r.info), 'A1: alignment works when the launch edge wraps round the window');
 }
+// ---- launch edge on the real board's waveform (19 Nov): both halves sag, edge right at the end of the window
+{
+  const T = require('../js/tdr.js');
+  let sd = 9; const rnd = () => ((sd = (sd * 16807) % 2147483647) / 2147483647);
+  const board = (L, echo) => {                          // square wave through a high-pass, noise of +/-20 counts
+    const n = 1000, ideal = [], out = []; let y = 0, prev = 0;
+    for (let i = 0; i < n; i++) { const k = ((i - L) % n + n) % n; let x = k < 500 ? 1 : 0; if (echo && k >= echo.k && k < 500) x += echo.a; ideal.push(x); }
+    for (let r = 0; r < 4; r++) for (let i = 0; i < n; i++) { const x = ideal[i]; y = (y + x - prev) * Math.exp(-1 / 1100); prev = x; if (r === 3) out.push(Math.round(1750 + 1650 * y + (rnd() - 0.5) * 40)); }
+    return out;
+  };
+  const cfg = Object.assign(T.defaultConfig(), { vp: 0.66 });
+  const launches = [999, 0, 1, 999].map((L) => D.sweepLaunch(board(L), 20).idx);
+  ok(launches.every((x, k) => Math.abs(((x - [999, 0, 1, 999][k] + 1500) % 1000) - 500) <= 1), 'sagging board waveform: launch edge found within 1 sample (' + launches.join(',') + ')');
+  const res = (echo) => { const q = D.parseCapture(D.sweepsToText([999, 0, 1, 999].map((L) => board(L, echo)), {}), { valueMode: 'volts' }); return T.findReflections(Float64Array.from(q.t, (x) => x / 1e5), q.v, cfg).reflections.filter((r) => Math.abs(r.delta) >= 0.25); };
+  ok(res(null).length === 0, 'sagging board waveform, nothing connected: no fault reported');
+  const o = res({ k: 20, a: 1 }), sh = res({ k: 30, a: -1 });
+  ok(o.length === 1 && near(o[0].distance, 1.98, 0.06) && sh.length === 1 && near(sh[0].distance, 2.97, 0.06), 'sagging board waveform: open at 1.98 m and short at 2.97 m found');
+}
 const asm = new D.LineAssembler({ onCapture: (t) => { got = t; } }, { idleMs: 30, minLines: 50 });
 asm.push('boot v1.2'); asm.push('START'); for (let i = 0; i < 120; i++) asm.push(i + ',' + i); asm.push('END');
 ok(got && got.split('\n').length === 120, 'serial assembler: START ... END gives 120 lines, chatter ignored');

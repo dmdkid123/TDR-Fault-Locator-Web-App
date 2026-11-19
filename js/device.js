@@ -116,14 +116,30 @@
 
   /** Launch edge of one sweep (or an averaged one): the rising edge that ends the longest low stretch, found circularly
    *  because the 1 MHz pulse train repeats exactly once per sweep window. The biggest rising edge would be wrong, since
-   *  the echo of an open circuit is as big as the launch edge. -> {idx, lo, hi} or null for a flat sweep. */
+   *  the echo of an open circuit is as big as the launch edge.
+   *  The low half of the real board's pulse is not flat: the signal reaching the ADC sags back toward the middle on both
+   *  halves (it climbs from about 0% to 18% of the swing before the next launch, measured 19 Nov). Thresholds must stay above
+   *  that, but below the launch step when an open circuit right after it doubles the level. So the low stretch is found on a lightly
+   *  smoothed copy with hysteresis (in below 25%, out above 33% of the swing), and the result is then snapped to the
+   *  steepest rise next to that crossing. -> {idx (first sample after the rise), lo, hi} or null for a flat sweep. */
   function sweepLaunch(v, minSwing) {
-    const n = v.length, sorted = Float64Array.from(v).sort(), lo = sorted[Math.floor(n * 0.02)], hi = sorted[Math.floor(n * 0.98)];
-    if (!(hi - lo > (minSwing || 0))) return null;
-    const thr = lo + 0.2 * (hi - lo);
-    let best = 0, bestEnd = -1, run = 0;
-    for (let i = 0; i < 2 * n; i++) { if (v[i % n] < thr) { run++; if (run > best && run <= n) { best = run; bestEnd = (i + 1) % n; } } else run = 0; }
-    return bestEnd >= 0 && best < n ? { idx: bestEnd, lo, hi } : null;
+    const n = v.length, sm = new Float64Array(n);
+    for (let i = 0; i < n; i++) { let t = 0; for (let k = -2; k <= 2; k++) t += v[(i + k + n) % n]; sm[i] = t / 5; }
+    const srt = Float64Array.from(sm).sort(), lo = srt[Math.floor(n * 0.02)], hi = srt[Math.floor(n * 0.98)], sw = hi - lo;
+    if (!(sw > (minSwing || 0))) return null;
+    const enter = lo + 0.25 * sw, leave = lo + 0.33 * sw;
+    let start = 0; while (start < n && sm[start] < leave) start++;          // start the circular scan from a high sample
+    if (start >= n) return null;
+    let low = false, run = 0, best = 0, bestEnd = -1;
+    for (let j = 1; j <= n; j++) {
+      const i = (start + j) % n;
+      if (!low && sm[i] < enter) { low = true; run = 0; }
+      if (low) { if (sm[i] > leave) { if (run > best) { best = run; bestEnd = i; } low = false; } else run++; }
+    }
+    if (bestEnd < 0) return null;
+    let idx = bestEnd, d = -Infinity;
+    for (let j = -8; j <= 3; j++) { const i = (bestEnd + j + n) % n, sl = v[i] - v[(i - 1 + n) % n]; if (sl > d) { d = sl; idx = i; } }
+    return { idx, lo, hi };
   }
 
   /** A1: compare one raw sweep with the reference sweep of this capture and rotate it so its launch edge lands on the
