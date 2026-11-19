@@ -2,6 +2,8 @@
  * Five stages: Launch, Reflect, Reconstruct, Analyze, Locate. Exposes window.TDRDemo. */
 (function (root) {
   'use strict';
+  const mft = (m, d) => { d = d == null ? 2 : d; return (+m).toFixed(d) + ' m (' + (m / 0.3048).toFixed(d >= 3 ? 2 : 1) + ' ft)'; };   // every distance shown in metres AND feet
+
   const T = root.TDR, CH = root.TDRChart, $ = (id) => document.getElementById(id);
   const C = 0.299792458; // metres per nanosecond in free space
   const SCEN = [
@@ -93,7 +95,7 @@
     g.fillStyle = v('--panel2'); CH.roundRect(g, 14, midY - 28, 58, 56, 7); g.fill(); g.strokeStyle = v('--grat2'); g.lineWidth = 1; g.stroke();
     g.fillStyle = v('--ink'); g.font = '700 14px ' + v('--font-display'); g.textAlign = 'center'; g.fillText('TDR', 43, midY - 4); g.font = '11px ' + v('--font-ui'); g.fillStyle = v('--mute'); g.fillText('120 Ω', 43, midY + 13);
     g.strokeStyle = v('--grat2'); g.lineWidth = 5; g.beginPath(); g.moveTo(72, midY); g.lineTo(X(0), midY); g.stroke();
-    g.fillStyle = v('--scope-ink'); g.textAlign = 'right'; g.font = '12px ' + v('--font-mono'); g.fillText('t = ' + τ.toFixed(1) + ' ns   edge at ' + Math.min(front, L).toFixed(2) + ' m', w - 12, 18);
+    g.fillStyle = v('--scope-ink'); g.textAlign = 'right'; g.font = '12px ' + v('--font-mono'); g.fillText('t = ' + τ.toFixed(1) + ' ns   edge at ' + mft(Math.min(front, L)), w - 12, 18);
     g.textAlign = 'left'; g.font = '12px ' + v('--font-ui'); g.fillText('The wire, drawn to scale along its length', 12, 18);
   }
 
@@ -108,7 +110,7 @@
     m.ev.forEach((e, k) => {
       const arr = T.distanceToTime(e.d, m.cfg.vp) * 1e9; if (τ < arr) return; const c = e.a >= 0 ? v('--open') : v('--highz');
       g.strokeStyle = c; g.lineWidth = 1.2; g.setLineDash([5, 4]); g.beginPath(); g.moveTo(A.X(arr), R.t); g.lineTo(A.X(arr), R.b); g.stroke(); g.setLineDash([]);
-      flag(g, Math.min(A.X(arr) + 6, R.r - 190), R.t + 6 + k * 22, 'echo from ' + e.d.toFixed(2) + ' m  (' + (e.a >= 0 ? '+' : '') + e.a.toFixed(2) + ')', c);
+      flag(g, Math.min(A.X(arr) + 6, R.r - 190), R.t + 6 + k * 22, 'echo from ' + mft(e.d, 2) + '  (' + (e.a >= 0 ? '+' : '') + e.a.toFixed(2) + ')', c);
     });
     g.fillStyle = v('--scope-ink'); g.textAlign = 'left'; g.font = '12px ' + v('--font-ui'); g.fillText('What the board sees at its own terminal', 12, 16);
   }
@@ -142,7 +144,7 @@
     m.rows.forEach((r, i) => {
       if (i >= reveal) return; const x = A.X(r.reflection.distance), c = kcol(r.kind);
       g.strokeStyle = c; g.lineWidth = r === m.prim ? 2 : 1.2; g.setLineDash(r === m.prim ? [] : [6, 4]); g.beginPath(); g.moveTo(x, R.t); g.lineTo(x, R.b); g.stroke(); g.setLineDash([]);
-      flag(g, Math.min(x + 6, R.r - 80), R.t + 6 + (i % 3) * 22, r.reflection.distance.toFixed(2) + ' m', c);
+      flag(g, Math.min(x + 6, R.r - 80), R.t + 6 + (i % 3) * 22, mft(r.reflection.distance, 2) + '', c);
     });
     g.fillStyle = v('--scope-ink'); g.textAlign = 'left'; g.font = '12px ' + v('--font-ui'); g.fillText('Normalized trace: reflection coefficient against distance', 12, 16);
   }
@@ -177,15 +179,15 @@
     const m = S.m, sc = m.sc, vpc = m.vpc, r0 = m.prim ? m.prim.reflection : null, el = $('explain'), stg = S.stage, rt = T.distanceToTime(sc.d, m.cfg.vp) * 1e9; let h = '';
     const story = '<p><i>' + sc.story + '</i></p>';
     if (stg === 0) h = '<h3>Send a fast edge down the wire</h3>' + story + '<p>The board fires a 5 V step with a 1 ns rise through a 120 Ω source. The source matches the harness, so 2.5 V travels down the wire and nothing bounces back from the board itself.</p><p>On this wire the edge moves at ' + (vpc * 100).toFixed(1) + ' cm per nanosecond, so each nanosecond of round-trip time is about ' + (vpc * 50).toFixed(0) + ' cm of wire.</p>' + kv([['Edge rise time', '1 ns'], ['Voltage on the wire', '2.50 V'], ['Speed on this wire', (vpc * 100).toFixed(1) + ' cm/ns'], ['Velocity factor', m.cfg.vp.toFixed(2)]]);
-    else if (stg === 1) h = '<h3>Listen for the echoes</h3><p>Wherever the wire’s impedance changes, part of the edge reflects. An open sends it back with the same sign, a short sends it back upside down, and a partial change sends back a fraction.</p><p>The echo from this fault returns after 2 × ' + sc.d.toFixed(2) + ' m ÷ ' + (vpc * 100).toFixed(1) + ' cm/ns, which is ' + rt.toFixed(1) + ' ns.</p>' + kv([['Fault distance', sc.d.toFixed(2) + ' m'], ['Echo arrives after', rt.toFixed(1) + ' ns'], ['Echo size', (sc.a >= 0 ? '+' : '') + sc.a.toFixed(2)], ['Meaning', sc.a > 0.8 ? 'open: full echo, same sign' : sc.a < -0.8 ? 'short: full echo, inverted' : sc.a < 0 ? 'partial leak to ground' : 'partial break, added resistance']]);
+    else if (stg === 1) h = '<h3>Listen for the echoes</h3><p>Wherever the wire’s impedance changes, part of the edge reflects. An open sends it back with the same sign, a short sends it back upside down, and a partial change sends back a fraction.</p><p>The echo from this fault returns after 2 × ' + mft(sc.d, 2) + ' ÷ ' + (vpc * 100).toFixed(1) + ' cm/ns, which is ' + rt.toFixed(1) + ' ns.</p>' + kv([['Fault distance', mft(sc.d, 2) + ''], ['Echo arrives after', rt.toFixed(1) + ' ns'], ['Echo size', (sc.a >= 0 ? '+' : '') + sc.a.toFixed(2)], ['Meaning', sc.a > 0.8 ? 'open: full echo, same sign' : sc.a < -0.8 ? 'short: full echo, inverted' : sc.a < 0 ? 'partial leak to ground' : 'partial break, added resistance']]);
     else if (stg === 2) h = '<h3>Slow it down so a cheap scope can see it</h3><p>Nothing affordable can sample every 10 ps in real time. So the board sends the same pulse a million times a second and samples each echo 10 ps later than the one before.</p><p>After ' + m.cap.t.length.toLocaleString() + ' pulses it has rebuilt the whole ' + (m.cap.t[m.cap.t.length - 1] * 1e9).toFixed(0) + ' ns window, stretched 100,000 times. The 1 ns edge now lasts 100 µs, which a 25 MHz USB scope shows easily.</p>' + kv([['Pulse rate', '1 MHz'], ['Sample rate offset', '10 Hz'], ['Step per pulse', (T.etStepSeconds(1e6, 1e6 - 10) * 1e12).toFixed(0) + ' ps'], ['Stretch', Math.round(T.etScaleFactor(1e6, 1e6 - 10)).toLocaleString('en-US') + '×'], ['This window on the scope', (m.cap.t[m.cap.t.length - 1] * 1e8).toFixed(0) + ' ms']]);
     else if (stg === 3) {
       const a = m.an, items = ['Launch edge found at ' + (a.t0 * 1e9).toFixed(2) + ' ns. Everything before it is the baseline.', 'The incident step is ' + a.amp.toFixed(2) + ' V, so a full open would add the same again.', 'Divide by the step to get the reflection coefficient ρ, from −1 (short) to +1 (open).', 'The noise floor sets a threshold, so only steep edges count as echoes.']
-        .concat(m.rows.map((r) => { const q = r.reflection; return '<b style="color:' + kcol(r.kind) + '">Echo at ' + q.distance.toFixed(3) + ' m</b>, step ' + (q.delta >= 0 ? '+' : '') + q.delta.toFixed(2) + ': ' + (r.kind === 'feat' ? 'a minor feature, probably a connector or splice.' : r.kind === 'eol' ? 'the expected end of the line.' : T.kindLabel(q.kind)[0].toLowerCase() + '.'); }));
+        .concat(m.rows.map((r) => { const q = r.reflection; return '<b style="color:' + kcol(r.kind) + '">Echo at ' + mft(q.distance, 3) + '</b>, step ' + (q.delta >= 0 ? '+' : '') + q.delta.toFixed(2) + ': ' + (r.kind === 'feat' ? 'a minor feature, probably a connector or splice.' : r.kind === 'eol' ? 'the expected end of the line.' : T.kindLabel(q.kind)[0].toLowerCase() + '.'); }));
       h = '<h3>Turn the trace into a verdict</h3><ol style="padding-left:18px;margin:8px 0">' + items.slice(0, Math.min(items.length, listCount)).map((t) => '<li style="margin:6px 0">' + t + '</li>').join('') + '</ol>';
     } else {
       const c = m.prim ? m.prim.candidates : [];
-      h = '<h3>Find it on the vehicle</h3><p>The distance is walked along the circuit’s wire route from the CAD. Where the circuit branches, every branch at that distance is marked, because the echo cannot say which one.</p>' + (r0 ? kv([['Measured distance', r0.distance.toFixed(3) + ' m'], ['Simulated truth', sc.d.toFixed(3) + ' m'], ['Error', (Math.abs(r0.distance - sc.d) * 100).toFixed(1) + ' cm'], ['Location', c.length ? c.map((q) => q.segment + ', ' + Math.round(q.intoMm) + ' mm in').join('; ') : 'not on this circuit'], ['Search zone', '±' + ctx.cfg().zone + ' mm']]) : '<p>No fault was found in this capture.</p>') + '<p class="hint">Use the buttons under the animation to open this result in Measure or in the 3D locator.</p>';
+      h = '<h3>Find it on the vehicle</h3><p>The distance is walked along the circuit’s wire route from the CAD. Where the circuit branches, every branch at that distance is marked, because the echo cannot say which one.</p>' + (r0 ? kv([['Measured distance', mft(r0.distance, 3) + ''], ['Simulated truth', mft(sc.d, 3) + ''], ['Error', (Math.abs(r0.distance - sc.d) * 100).toFixed(1) + ' cm'], ['Location', c.length ? c.map((q) => q.segment + ', ' + Math.round(q.intoMm) + ' mm in').join('; ') : 'not on this circuit'], ['Search zone', '±' + ctx.cfg().zone + ' mm']]) : '<p>No fault was found in this capture.</p>') + '<p class="hint">Use the buttons under the animation to open this result in Measure or in the 3D locator.</p>';
     }
     const key = stg + ':' + S.sc + ':' + listCount + ':' + ctx.cfg().zone + ':' + ctx.cfg().vp;
     if (el.dataset.k !== key) { el.innerHTML = h; el.dataset.k = key; }

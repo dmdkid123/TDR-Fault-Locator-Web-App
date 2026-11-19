@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TDR Fault Locator</title>
-<meta name="tdr-build" content="8">
-<link rel="stylesheet" href="css/style.css?v=8">
+<meta name="tdr-build" content="11">
+<link rel="stylesheet" href="css/style.css?v=11">
 <script>
   // Apply the saved theme before first paint to avoid a flash.
   try { var t = localStorage.getItem('tdr.theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (e) {}
@@ -87,6 +87,8 @@
             <header><h2>Circuit under test</h2></header>
             <div class="body">
               <div class="field"><label for="selNet">Circuit</label><select id="selNet"></select></div>
+              <div class="field"><label for="ignoreM">Ignore closer than (m)</label><input type="number" id="ignoreM" min="0" max="20" step="0.05" placeholder="0"><small>Treats everything nearer than this as the connector: never a fault, never the cable end. Distances are still measured from the board.</small></div>
+              <div class="field" id="benchField" hidden><label for="benchFt">Cable length (ft)</label><input type="number" id="benchFt" min="0.5" step="0.1" placeholder="Unknown"><small id="benchM"></small><small>For a plain cable on the bench. Leave it blank and the app measures the length from the first full open. Enter it and the far end is checked against it. Anything past the end is shown as a bounce, not a fault.</small></div>
               <div class="field"><label for="qVp">Velocity factor</label><input type="number" id="qVp" min="0.3" max="1" step="0.01"></div>
               <div class="field"><label for="qScale">Time stretch</label><input type="number" id="qScale" min="1" step="1"></div>
               <p class="hint">Time stretch is 100000 for the 1 MHz / 10 Hz equivalent-time sampler and 1 for a real-time capture. More options are in Setup.</p>
@@ -214,6 +216,8 @@
             <div class="field"><label for="sFault">Fault threshold</label><input type="number" id="sFault" min="0.05" max="0.9" step="0.01"><small>Steps smaller than this are listed as minor features such as connectors or splices.</small></div>
             <div class="field"><label for="sScale">Time stretch</label><input type="number" id="sScale" min="1" step="1"></div>
             <div class="field"><label for="sZone">Search zone &plusmn; (mm)</label><input type="number" id="sZone" min="5" step="5"></div>
+            <div class="field"><label for="sMaxR">Max range (m)</label><input type="number" id="sMaxR" min="1" max="45" step="1"><small>Nothing farther than this is analyzed or reported. The harness spec is 30 m; the pulse turns off at about 49 m.</small></div>
+            <div class="field"><label for="sOpenV">Open-circuit step (V)</label><input type="number" id="sOpenV" min="0.5" max="3.3" step="0.05"><small>The step height with nothing connected (launch to flat level, in the Volts view). Used to recognise a short or an open right at the connector.</small></div>
             <div class="field"><label for="sAdj">Re-analyze on change</label><input type="checkbox" id="sAdj" checked></div>
           </div>
         </div>
@@ -285,13 +289,13 @@
 <div class="toast" id="toast" hidden role="status"></div>
 <div id="printReport"></div>
 
-<script src="js/harness_data.js?v=8"></script>
-<script src="js/tdr.js?v=8"></script>
-<script src="js/chart.js?v=8"></script>
-<script src="js/device.js?v=8"></script>
-<script src="js/carmesh.js?v=8"></script>
-<script src="js/viewer.js?v=8"></script>
-<script src="js/demo.js?v=8"></script>
-<script src="js/app.js?v=8"></script>
+<script src="js/harness_data.js?v=11"></script>
+<script src="js/tdr.js?v=11"></script>
+<script src="js/chart.js?v=11"></script>
+<script src="js/device.js?v=11"></script>
+<script src="js/carmesh.js?v=11"></script>
+<script src="js/viewer.js?v=11"></script>
+<script src="js/demo.js?v=11"></script>
+<script src="js/app.js?v=11"></script>
 </body>
 </html>

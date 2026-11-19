@@ -21,7 +21,7 @@
 
   function defaultConfig() {
     return { z0: 120, vp: 0.66, riseTime: 1e-9, minGamma: 0.05, deadZone: null,
-             openGamma: 0.8, shortGamma: -0.8, vInc: null };
+             openGamma: 0.8, shortGamma: -0.7, vInc: null };   // -0.7 (~21 ohm on 120): a real short at the far end of a long cable reads ~-0.8 after cable loss
   }
   const deadZone = (cfg) => (cfg.deadZone != null ? cfg.deadZone : 3 * cfg.riseTime);
 

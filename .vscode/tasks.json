@@ -1,0 +1,22 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start web app (no extension needed)",
+      "detail": "Serves this folder at http://localhost:5500. Open that address in Chrome or Edge. Stop with Ctrl+C in the terminal.",
+      "type": "shell",
+      "command": "python -m http.server 5500",
+      "windows": { "command": "py -m http.server 5500" },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Run web app tests",
+      "detail": "Needs Node.js. Checks the TDR maths and the board protocol.",
+      "type": "shell",
+      "command": "node test/tdr.test.js && node test/device.test.js",
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,6 +1,8 @@
 /* chart.js - scope-style trace display. Plain script, exposes window.TDRChart. */
 (function (root) {
   'use strict';
+  const mft = (m, d) => { d = d == null ? 2 : d; return (+m).toFixed(d) + ' m (' + (m / 0.3048).toFixed(d >= 3 ? 2 : 1) + ' ft)'; };   // every distance shown in metres AND feet
+
   const C0 = 299792458;
 
   function niceStep(span, target) {
@@ -146,7 +148,7 @@
         const c = col(KIND_VAR[m.kind] || '--feat');
         g.strokeStyle = c; g.lineWidth = m.primary ? 2 : 1.2; g.setLineDash(m.primary ? [] : [6, 4]);
         g.beginPath(); g.moveTo(px, P.t); g.lineTo(px, P.t + ph); g.stroke(); g.setLineDash([]);
-        const text = m.label || m.x.toFixed(2) + ' m'; g.font = '600 12px ' + cssVar('--font-ui');
+        const text = m.label || mft(m.x, 2) + ''; g.font = '600 12px ' + cssVar('--font-ui');
         const tw = g.measureText(text).width + 14; let fx = px + 6; if (fx + tw > P.l + pw) fx = px - 6 - tw;
         let row = 0; while (placed.some((p) => p.row === row && fx < p.x1 && fx + tw > p.x0) && row < 5) row++;
         placed.push({ row, x0: fx, x1: fx + tw }); const fy = P.t + 6 + row * 22;
@@ -171,7 +173,7 @@
       if (this.hover != null && D) {
         const px = X(this.hover), i = Math.min(D.x.length - 1, Math.max(0, lowerBound(D.x, this.hover)));
         g.strokeStyle = 'rgba(255,255,255,.35)'; g.lineWidth = 1; g.beginPath(); g.moveTo(Math.round(px) + .5, P.t); g.lineTo(Math.round(px) + .5, P.t + ph); g.stroke();
-        const dm = D.x[i], ns = dm * k, v = ys[i], txt = [dm.toFixed(3) + ' m', ns.toFixed(2) + ' ns', (this.mode === 'rho' ? (v >= 0 ? '+' : '') + v.toFixed(3) : v.toFixed(3) + ' V')];
+        const dm = D.x[i], ns = dm * k, v = ys[i], txt = [mft(dm, 3) + '', ns.toFixed(2) + ' ns', (this.mode === 'rho' ? (v >= 0 ? '+' : '') + v.toFixed(3) : v.toFixed(3) + ' V')];
         g.font = '12px ' + cssVar('--font-mono'); const bw = Math.max(...txt.map((s) => g.measureText(s).width)) + 16, bh = 56;
         let bx = px + 12; if (bx + bw > P.l + pw) bx = px - 12 - bw; const by = P.t + ph - bh - 8;
         g.fillStyle = 'rgba(10,15,20,.92)'; g.strokeStyle = grat2; roundRect(g, bx, by, bw, bh, 5); g.fill(); g.stroke();

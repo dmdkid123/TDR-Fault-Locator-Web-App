@@ -1,110 +1,77 @@
-# TDR Fault Locator (user interface)
+# TDR Fault Locator (ECE 480 Team 10)
 
-A dashboard for the ECE 480 Team 10 TDR wiring fault locator. It reads a capture from the board (USB serial) or from a scope file, finds the reflections, says what kind of fault it is and how far away, then shows where that is on the vehicle's wiring in 3D. No installs, no build step, no internet needed.
+Everything for the project in one folder: the web app that reads the board and finds the fault, and the ESP32 firmware.
 
-## Run it in VS Code
+```
+TDR-Fault-Locator/
+  index.html, css/, js/   the web app (this is also what the GitHub Pages site serves)
+  sample/                 example scope captures to try without the board
+  test/                   web app tests (Node.js)
+  firmware/               ESP32 firmware, PlatformIO project
+    src/                  main.cpp, adc_sampler.h, serial_protocol.h, si5351_driver.h
+    host_test/run.sh      checks the firmware on a PC, including that the web app decodes its packets
+```
 
-1. Open this folder in VS Code.
-2. Install the **Live Server** extension (VS Code will suggest it).
-3. Right-click `index.html` and choose **Open with Live Server**.
+## Run the web app in VS Code
 
-No Live Server? In a terminal inside this folder run `py -m http.server 5500` and open http://localhost:5500. Double-clicking `index.html` also works for everything except possibly USB serial.
+1. **File > Open Folder** and pick this `TDR-Fault-Locator` folder.
+2. Install **Live Server** when VS Code suggests it (or from the Extensions panel).
+3. Right-click `index.html` and choose **Open with Live Server**. It opens at http://127.0.0.1:5500.
 
-Use **Chrome or Edge**. USB serial (Web Serial) is not available in Firefox or Safari. CSV files, the demo and the 3D view work in any current browser.
+No Live Server? **Terminal > Run Task > Start web app (no extension needed)**, then open http://localhost:5500. It needs Python.
+
+Use **Chrome or Edge**. The USB connection to the board only works in those two. Everything else (CSV files, the demo, the 3D view) works in any current browser.
+
+## Measure with the board
+
+1. Plug the ESP32 into USB. Close the Arduino or PlatformIO serial monitor if it is open, because only one program can use the port.
+2. Press **Connect USB device** and pick the board's port (it shows as `10c4:ea60` or similar).
+3. Press **Capture** for one measurement, or **Start live view** to measure continuously.
+
+The defaults match the firmware: binary sweep packets at 921600 baud, 1000 samples 100 µs apart, which is 1 ns per sample after the 100,000× time stretch. If you changed **Setup > Sample interval**, set it back to **100**, or every distance is off.
+
+The **Board log** under the Device card shows what the board reports and, after each capture, how many sweeps were used and why any were dropped.
+
+### Testing a plain cable on the bench
+
+Under **Circuit under test**, pick **BENCH_CABLE**.
+
+- **Length known:** type it in feet. The far end is reported as the expected end of line, not a fault.
+- **Length unknown:** leave it blank. The first full open is taken as the far end and the app shows **Measured cable length**. A break looks the same as the end of a cable, so enter the length when you know it.
+
+The pulse bounces between the far end and the board, so a trace also shows repeats past the end of the cable. Those are listed as **Echo past the end**, not as faults.
+
+Distances depend on the velocity factor (0.66 by default). Calibrate it once per cable type in **Setup > Calibration**, using a piece of known length with the far end open.
+
+## Update the GitHub Pages site
+
+The site is the top level of this folder. Copy `index.html`, `css/`, `js/`, `sample/` and `test/` into the repository (keep their folder names), commit and push. The site updates within a minute or two. Then press Ctrl+F5 on it.
+
+If the page shows a red bar saying the files are from different versions, `index.html` and `js/app.js` do not match. Upload both from this folder.
+
+## Build and flash the firmware
+
+1. Install the **PlatformIO IDE** extension.
+2. Open the `firmware` folder in its own VS Code window (**File > Open Folder > firmware**). PlatformIO needs `platformio.ini` at the top of the window's folder.
+3. Use the PlatformIO toolbar at the bottom: check mark to build, arrow to upload. The serial monitor is already set to 921600.
+
+To check the firmware without hardware (Linux, macOS or WSL, with g++, Python 3 and Node.js): `sh firmware/host_test/run.sh`.
+
+## Run the web app tests
+
+**Terminal > Run Task > Run web app tests**, or `node test/tdr.test.js` and `node test/device.test.js`. Needs Node.js.
 
 ## The four tabs
 
 | Tab | What it does |
 |---|---|
-| Measure | Connect the board (or the virtual device, or open a scope CSV), see the trace, get the verdict: fault type, distance, and the wire segment and XYZ position. |
-| 3D locator | Orbit and zoom the harness with the fault marked and a search zone highlighted. Optional vehicle body from an STL. |
-| Demo | Animated walkthrough of one measurement in five stages (launch, reflect, reconstruct, analyze, locate) with six scenarios. It runs the same analysis code as Measure. "Open in Measure" sends the demo capture into the real pipeline. |
-| Setup | Velocity factor, impedance, rise time, thresholds, time stretch, device settings, velocity calibration, harness JSON, STL. |
+| Measure | Connect the board (or the virtual device, or open a scope CSV), see the trace, get the verdict: fault type, distance, and where it is on the circuit. History, report printing and live view are here too. |
+| 3D locator | Orbit and zoom the harness with the fault marked and a search zone highlighted. |
+| Demo | Animated walkthrough of one measurement in five stages with six example faults. It runs the same analysis code as Measure. |
+| Setup | Velocity factor, impedance, thresholds, time stretch, device settings, calibration, harness JSON. |
 
-## Connecting the device
+## Known hardware issues (19 Nov)
 
-Press **Connect USB device**, pick the board's serial port, then **Capture**. Settings are in Setup, under Device connection.
-
-The board should send plain text lines at the configured baud rate (default 115200):
-
-```
-START                 optional
-<time>,<value>        one per sample, e.g. 1.250000000e-03,2.4871
-...
-END                   optional
-```
-
-- `time` is the time on the **stretched** waveform (what the scope would show). With the 1 MHz / 10 Hz sampler the stretch is 100000, which is the default.
-- A single `value` per line also works; set the sample interval in Setup.
-- ADC counts work: choose "ADC counts", then set the bits and reference voltage.
-- Without `END`, a capture finishes after a short pause in the data. Lines that start with a letter (log messages) are ignored.
-- If "Capture command" in Setup is not empty (default `MEASURE`), the app sends it plus a newline when you press Capture. Clear it if the board streams on its own.
-
-The **virtual device** streams a simulated capture through exactly the same line parser, so you can test the whole path with no hardware.
-
-## Scope CSV files
-
-Any CSV with a time column and a voltage column. Header units like `Time (ms)` and `(mV)` are understood, as is the units row PicoScope writes. Drag the file onto the page or use **Open scope CSV**. Add a **known-good reference** (the same circuit on a healthy harness) to remove normal connector and splice reflections.
-
-Samples are in `sample/`. Load `fuel_pump_open_1p9m.csv` with the default settings and you should get an open circuit at 1.90 m. Load `fuel_pump_good_reference.csv` as the reference to see the connector reflection disappear.
-
-## Using the real vehicle
-
-The built-in harness and body are mock geometry. To use the real data:
-
-1. **Harness.** Setup > Harness model takes JSON: `nodes` (name: [x, y, z] in mm), and `nets` (one per circuit: a `root` node at the test point and `segments` with `from`, `to`, optional `via` points along the route, optional `length_mm`, optional `color`). Export the wire routes from the 3D CAD into this shape. `electrical_length_factor` (default 1.03 in the example) accounts for twist and slack.
-2. **Vehicle body.** Setup > Vehicle body > Load STL (binary or ASCII, millimetres, same coordinate frame as the harness).
-3. **Velocity factor.** Capture an open-ended wire of known length, enter the length in Setup > Calibrate, press the button. A 3% error is about 9 cm at 3 m, so do this before trusting distances.
-
-## How the answer is worked out
-
-Time stretch removed, then: launch edge found, step normalised to a reflection coefficient, steep edges detected, each edge's step size classified (open about +1, short about -1, partial values are resistive shorts or high resistance), time converted to distance with `d = vp x c x t / 2`, then walked along the circuit's wire route. The analysis is a line-by-line port of `tdr_locator.py` and the two give identical results on the same data.
-
-## Limits to know about
-
-- First-order model: distances are reliable, amplitudes beyond a splice or a partial fault are approximate.
-- Blind zone of about 0.3 m after the test point with a 1 ns edge; two features closer than about 10 cm merge.
-- The first real fault along the wire is the one reported. Beyond a break nothing is visible.
-- Where a circuit branches the echo cannot say which branch, so every branch at that distance is marked.
-- A reflection within the search zone of a circuit's far end is treated as the expected end of line.
-- 3D positions are only as good as the CAD routes and the velocity factor.
-
-## Tests
-
-Needs Node.js (no packages):
-
-```
-node test/tdr.test.js       # engine: math, fault types, accuracy sweep, noise, harness mapping
-node test/device.test.js    # CSV and serial line parsing
-```
-
-## Files
-
-```
-index.html          the page
-css/style.css       styles
-js/tdr.js           analysis engine (port of tdr_locator.py)
-js/harness_data.js  example harness (mock geometry)
-js/device.js        CSV parser, USB serial, virtual device
-js/chart.js         scope-style trace
-js/viewer.js        WebGL 3D viewer (no libraries)
-js/carmesh.js       placeholder body + STL reader
-js/demo.js          Demo tab
-js/app.js           ties it together
-sample/             example captures
-test/               Node tests
-```
-
-## Added in version 6
-
-- **Live view**: "Start live view" under Capture keeps the board sweeping and updates the trace and the result about 10 times a second.
-- **Reference in one click**: "Use this capture as reference" takes the trace on screen as the healthy reference. The reference is lined up on the launch edge before it is subtracted.
-- **Branched circuits**: the normal reflection of a junction (about -1/3) is recognised and not reported as a fault. Reflections past a junction are corrected for the signal lost there (4/9 for a two-way split). With a healthy reference loaded, the app picks the faulty branch from the end-of-wire echo that has disappeared.
-- **Sub-sample timing**: edges are timed where they cross their halfway level, by interpolating between samples. At 1 ns per sample the worst error in the tests drops from 8.6 cm to 1.7 cm.
-- **Board log**: messages from the board and counts of good sweeps, checksum failures and dropped overrun sweeps, under the Device card.
-- **Calibration steps** in Setup, with saved wire types.
-- **History** of the last 12 captures (show, compare on the trace, use as reference) and **Print report** (use the browser's "Save as PDF").
-- **Virtual device**: models wire ends and junctions, has a "No fault (healthy)" option, and lets you pick the branch for the fault.
-- The binary sweep is rotated using the longest low stretch, not the biggest rising edge, so an open circuit is no longer mistaken for the launch edge.
-
-Always replace the whole folder from the zip. If index.html and the scripts are from different versions, the page shows a red bar saying so.
+- **Signal near the top of the ADC.** Right after the pulse the board reads about 3,750 of 4,095 counts, where the ESP32 ADC (11 dB setting) stops being accurate (Espressif rates it to about 2.45 V). An open roughly doubles the voltage, so it can be squashed. A resistor divider on the sampler's WAVE output into GPIO34, sized so the pulse step reaches only about 1.0 to 1.2 V, leaves room for it.
+- **Signal sag.** The level drifts back toward the middle on both halves of each sweep, as if AC-coupled with roughly a 40 ms time constant in real time. The app copes with it, but it shrinks the steps from faults far down the wire.
+- **Unexplained drop at 0.58 m** with the 5.1 ft test cord after the connector was changed. It was not there with nothing connected.

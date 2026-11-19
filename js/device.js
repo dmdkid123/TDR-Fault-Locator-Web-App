@@ -128,14 +128,19 @@
     const srt = Float64Array.from(sm).sort(), lo = srt[Math.floor(n * 0.02)], hi = srt[Math.floor(n * 0.98)], sw = hi - lo;
     if (!(sw > (minSwing || 0))) return null;
     const enter = lo + 0.25 * sw, leave = lo + 0.33 * sw;
-    let start = 0; while (start < n && sm[start] < leave) start++;          // start the circular scan from a high sample
+    // The launch is the rising edge that STARTS the longest high stretch. (Build 10 used the edge that ENDS the longest
+    // low stretch, but the board puts two short pulses ~15-30 ns before the launch, which split the low stretch, so it
+    // locked onto the first pulse and every later edge showed up as a fake short/open. The real pulse is high for ~500
+    // samples; those glitches for ~6.)
+    let start = 0; while (start < n && sm[start] > enter) start++;          // start the circular scan from a low sample
     if (start >= n) return null;
-    let low = false, run = 0, best = 0, bestEnd = -1;
+    let high = false, run = 0, cur = -1, best = 0, bestEnd = -1;
     for (let j = 1; j <= n; j++) {
       const i = (start + j) % n;
-      if (!low && sm[i] < enter) { low = true; run = 0; }
-      if (low) { if (sm[i] > leave) { if (run > best) { best = run; bestEnd = i; } low = false; } else run++; }
+      if (!high && sm[i] > leave) { high = true; run = 0; cur = i; }
+      if (high) { if (sm[i] < enter) { if (run > best) { best = run; bestEnd = cur; } high = false; } else run++; }
     }
+    if (high && run > best) { best = run; bestEnd = cur; }
     if (bestEnd < 0) return null;
     let idx = bestEnd, d = -Infinity;
     for (let j = -8; j <= 3; j++) { const i = (bestEnd + j + n) % n, sl = v[i] - v[(i - 1 + n) % n]; if (sl > d) { d = sl; idx = i; } }
@@ -170,11 +175,11 @@
   /** Averages sweeps and turns ADC counts into the "time,volts" text that parseCapture() reads.
    *  The sweep starts at the 10 Hz beat, which can fall anywhere in the pulse, but the pulse train is periodic
    *  (1 MHz = exactly one sweep window), so the sweep is rotated to put flat baseline before the launch edge.
-   *  The launch edge is the rising edge that ends the longest low stretch. (Picking the biggest rising edge is wrong:
+   *  The launch edge is the rising edge that starts the longest high stretch (see sweepLaunch). (Picking the biggest rising edge is wrong:
    *  the echo of an open circuit is as big as the launch edge itself.) The sweep is then cut just before the pulse's
    *  falling edge, half a period later, because the falling edge and its echoes are not of interest. */
   function sweepsToText(sweeps, o) {
-    o = Object.assign({ bits: 12, vref: 3.3, interval: 100e-6, lead: 80, duty: 0.5 }, o || {});
+    o = Object.assign({ bits: 12, vref: 3.3, interval: 100e-6, lead: 80, duty: 0.5, tail: 40 }, o || {});   // tail: samples kept clear of the pulse's falling edge (sag moves it earlier)
     const n = sweeps[0].length, full = Math.pow(2, o.bits) - 1;
     let v = new Float64Array(n);
     for (let i = 0; i < n; i++) { let a = 0; for (const s of sweeps) a += s[i]; v[i] = a / sweeps.length / full * o.vref; }
@@ -184,7 +189,13 @@
       {
         const shift = ((bestEnd - o.lead) % n + n) % n, r = new Float64Array(n);
         for (let i = 0; i < n; i++) r[i] = v[(i + shift) % n];
-        v = r.slice(0, Math.max(100, Math.min(n, o.lead + Math.round(n * o.duty) - 10)));
+        // Nothing physical happens before the launch, but the board puts two short pulses there (~15-30 ns early) and the
+        // engine's own launch finder would take the first of them as the launch. Replace the lead-in with the baseline
+        // (median of the low half, well away from the launch and those pulses).
+        const lowSeg = []; for (let i = 300; i >= 60; i--) lowSeg.push(v[((bestEnd - i) % n + n) % n]);
+        lowSeg.sort((a, b) => a - b); const baseV = lowSeg[lowSeg.length >> 1];
+        for (let i = 0; i < Math.max(0, o.lead - 2); i++) r[i] = baseV;
+        v = r.slice(0, Math.max(100, Math.min(n, o.lead + Math.round(n * o.duty) - o.tail)));
       }
     }
     const out = new Array(v.length);

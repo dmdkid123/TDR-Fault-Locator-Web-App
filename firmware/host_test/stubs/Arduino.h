@@ -43,6 +43,7 @@ struct HardwareSerial {
   void begin(unsigned long) {}
   int available() { return 0; }
   int read() { return -1; }
+  void flush() {}
   size_t write(const uint8_t* b, size_t n) { return fwrite(b, 1, n, stdout); }
   void println(const char* s) { fprintf(stderr, "%s\n", s); }
   __attribute__((format(printf, 2, 3))) void printf(const char* f, ...) { va_list ap; va_start(ap, f); vfprintf(stderr, f, ap); va_end(ap); }

@@ -1,6 +1,8 @@
 /* app.js - wires the device, analysis engine, scope chart, results, 3D locator and setup together. */
 (function () {
   'use strict';
+  const mft = (m, d) => { d = d == null ? 2 : d; return (+m).toFixed(d) + ' m (' + (m / 0.3048).toFixed(d >= 3 ? 2 : 1) + ' ft)'; };   // every distance shown in metres AND feet
+
   const T = window.TDR, D = window.TDRDevice, $ = (id) => document.getElementById(id);
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -9,10 +11,10 @@
     get(k, d) { try { const v = localStorage.getItem('tdr.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem('tdr.' + k, JSON.stringify(v)); } catch (e) { /* storage blocked: fine */ } }
   };
-  const DEFAULTS = { vp: 0.66, z0: 120, rise: 1, minStep: 0.05, faultThr: 0.25, scale: 100000, zone: 75, proto: 'sweep', baud: 921600, avg: 4, interval: 100, cmd: 'MEASURE', valueMode: 'volts', bits: 12, vref: 3.3, dt: 1, timeUnit: 'auto', reanalyze: true };
+  const DEFAULTS = { vp: 0.66, z0: 120, rise: 3, minStep: 0.05, faultThr: 0.25, scale: 100000, zone: 75, benchFt: '', ignoreM: 0, maxRangeM: 35, openStepV: 2.4, proto: 'sweep', baud: 921600, avg: 4, interval: 100, cmd: 'MEASURE', valueMode: 'volts', bits: 12, vref: 3.3, dt: 1, timeUnit: 'auto', reanalyze: true };
   const saved = store.get('cfg', {}); if (saved && !saved.proto) { delete saved.baud; delete saved.cmd; delete saved.dt; }   // settings from before the binary-sweep protocol
   const S = { cfg: Object.assign({}, DEFAULTS, saved), harness: null, netName: null, net: null, raw: null, ref: null, cmp: null, label: '', result: null, dev: null, meshInfo: '', live: false, hist: [], log: [], calPending: false };
-  const BUILD = '8';   // must match <meta name="tdr-build"> in index.html
+  const BUILD = '11';   // must match <meta name="tdr-build"> in index.html
   const SAMPLE = window.TDR_HARNESS;
 
   /* ---------------------------------------------------------------- small helpers */
@@ -22,15 +24,19 @@
   const save = () => store.set('cfg', S.cfg);
   const fmtZ = (z) => (z === Infinity || z == null || !isFinite(z) ? 'open' : Math.round(z) + ' Ω');
   function kindKey(row) {
-    if (row.junction || row.lostEnd) return 'feat';
+    if (row.junction || row.lostEnd || row.echo || row.ignored) return 'feat';
+    if (row.cableEnd) return 'eol';
     if (row.endOfLine) return 'eol';
     const r = row.reflection; if (Math.abs(r.delta) < S.cfg.faultThr) return 'feat';
     const k = r.kind; return k.startsWith('OPEN') ? 'open' : k.startsWith('SHORT') ? 'short' : k.startsWith('RESISTIVE') ? 'res' : 'highz';
   }
   function titleOf(row) {
     const k = kindKey(row);
+    if (row.ignored) return ['Connector (ignored)', 'Closer than the ' + mft(+S.cfg.ignoreM) + ' set under "Ignore closer than", so it is treated as the connector at the board and never reported as a fault.'];
+    if (row.echo) return ['Echo past the end', 'Nothing can be beyond the end of the wire. The pulse bounces back and forth between the far end and the board, and this is one of those repeats, not a fault.'];
     if (row.junction) return ['Junction', 'The circuit splits in two at ' + row.junction + '. A split always reflects about a third of the pulse, so this is normal.'];
     if (row.lostEnd) return ['End echo gone', 'The normal reflection from the end of the wire at ' + row.lostEnd + ' is no longer there, because the signal is stopped by the fault before it.'];
+    if (row.cableEnd) return ['Measured end of cable', 'The first full open reflection, taken as the far end of the cable because no length was entered. A break looks the same, so enter the length if you know it.'];
     if (k === 'eol') return ['Expected end of line', 'The reflection from the far end of the circuit, where it should be.'];
     if (k === 'feat') return ['Minor feature', 'A small impedance change such as a connector, splice or bend. Normal in most harnesses.'];
     return T.kindLabel(row.reflection.kind);
@@ -38,8 +44,17 @@
   const where = (c) => c.segment + ', ' + Math.round(c.intoMm) + ' mm along from ' + c.fromNode;
 
   /* ---------------------------------------------------------------- harness + circuit */
+  /** A plain cable on the bench, one segment of a length typed in feet (the CAD length factor is not applied). */
+  const BENCH = 'BENCH_CABLE';
+  function addBench(h) {
+    const known = +S.cfg.benchFt > 0, mm = known ? Math.max(100, Math.round(+S.cfg.benchFt * 304.8)) : 100000;   // unknown: 100 m stand-in, the real end is measured
+    S.benchAuto = !known;
+    h.nodes = h.nodes || {}; h.nodes.BENCH_TP = [0, -900, 40]; h.nodes.BENCH_END = [mm, -900, 40];
+    h.nets = h.nets || {}; h.nets[BENCH] = { root: 'BENCH_TP', segments: [{ id: 'CABLE', from: 'BENCH_TP', to: 'BENCH_END', length_mm: mm, color: '#d9d9d9' }] };
+    return h;
+  }
   function setHarness(h, keepNet) {
-    T.validateHarness(h); S.harness = h;
+    T.validateHarness(h); addBench(h); S.harness = h;
     const sel = $('selNet'); sel.innerHTML = ''; Object.keys(h.nets).forEach((n) => { const o = document.createElement('option'); o.value = o.textContent = n; sel.appendChild(o); });
     const want = keepNet && h.nets[S.netName] ? S.netName : (h.nets[store.get('net', '')] ? store.get('net', '') : Object.keys(h.nets)[0]);
     selectNet(want); $('harnessText').value = JSON.stringify(h, null, 2);
@@ -47,6 +62,7 @@
   function selectNet(name) {
     S.netName = name; S.net = T.buildNet(S.harness, name); $('selNet').value = name; store.set('net', name);
     $('chipNetName').textContent = name; if (viewer) viewer.setNet(S.net);
+    if ($('benchField')) $('benchField').hidden = name !== BENCH;
     const v = $('vDist'); v.max = Math.max(1, Math.floor(S.net.lengthM * 100) / 100).toString(); if (+v.value > +v.max) v.value = (+v.max * .6).toFixed(2); $('vDistVal').textContent = (+v.value).toFixed(2);
     refreshBranches();
     if (S.raw) analyze();
@@ -95,7 +111,51 @@
     return { a, t, v: raw.v, refV: ref, echo };
   }
   function makeRows(R) {
-    const rows = T.localize(R.a.reflections, S.net, S.cfg.zone, engCfg()), tol = Math.max(S.cfg.zone, 100);
+    // D1: the window ends just before the pulse's own falling edge (500 ns, ~49 m at vp 0.66). Nothing past the max range
+    // (harness spec is 30 m) is reported, so that edge can never show up as a "dead short".
+    const maxR = +S.cfg.maxRangeM > 0 ? +S.cfg.maxRangeM : 35;
+    if (R.conn) return [];
+    const rows = T.localize(R.a.reflections.filter((q) => q.distance <= maxR), S.net, S.cfg.zone, engCfg()), tol = Math.max(S.cfg.zone, 100);
+    const ign = +S.cfg.ignoreM || 0; rows.forEach((r) => { if (r.reflection.distance < ign) r.ignored = true; });
+    const live = rows.filter((r) => !r.ignored);
+    // Past the farthest wire end there is no wire, so anything there is the pulse bouncing between the far end and the board.
+    const endM = Math.max.apply(null, Object.values(S.net.leaves).concat([0])) / 1000, cut = endM + Math.max(0.25, 3 * S.cfg.zone / 1000);
+    if (S.netName === BENCH) {
+      // Bench cable, length typed in or not. The far end is the first big open (the pulse cannot get past an open); if there is
+      // none, the first dead short. Everything after it is the pulse bouncing between that point and the board. Faults BEFORE
+      // it (shorts, resistive, high resistance) are reported as usual. With an expected length typed in, an end that comes
+      // early is an open/break; without one, an open break and the real end look the same, so it is reported as the length.
+      const big = live.find((r) => r.reflection.delta >= 0.6) || live.find((r) => r.reflection.delta <= -0.8);
+      R.cableM = big && big.reflection.delta > 0 ? big.reflection.distance : null; R.cableShortM = big && big.reflection.delta < 0 ? big.reflection.distance : null;
+      R.expectedM = S.benchAuto ? null : +S.cfg.benchFt * 0.3048; R.earlyEndM = null; R.lateEndM = null;
+      if (big) { const c2 = big.reflection.distance + Math.max(0.25, 3 * S.cfg.zone / 1000); rows.forEach((r) => { if (r.reflection.distance > c2) r.echo = true; }); }
+      if (big && big.reflection.delta > 0) {
+        if (S.benchAuto) big.cableEnd = true;
+        else {
+          const D = big.reflection.distance, E = R.expectedM, tolE = Math.max(0.3, 0.03 * E);   // vp is rarely better than ~3%
+          if (D < E - tolE) { R.earlyEndM = E - D; big.endOfLine = false; }                        // stays an OPEN fault
+          else { big.cableEnd = true; if (D > E + tolE) R.lateEndM = D - E; }
+        }
+      }
+      // Sanity check. A clean cable gives one far end and repeats at 2x, 3x that distance. A hard drop before the end, or
+      // repeats that do not line up, mean the trace is not a clean cable (bad connector, ringing), so the length is not trusted.
+      R.cableWarn = '';
+      if (big && big.reflection.delta > 0) {
+        const D = big.reflection.distance, tolM = Math.max(0.15, 0.06 * D);
+        const before = live.filter((r) => r !== big && r.reflection.distance < D && Math.abs(r.reflection.delta) >= 0.5);
+        const odd = rows.filter((r) => r.echo && Math.abs(r.reflection.delta) >= 0.5 && Math.abs(r.reflection.distance / D - Math.round(r.reflection.distance / D)) * D > tolM);
+        if (before.length || odd.length) R.cableWarn = 'This does not look like a clean cable' + (before.length ? ': there is a hard ' + (before[0].reflection.delta < 0 ? 'drop' : 'rise') + ' at ' + mft(before[0].reflection.distance, 2) + ' before it' : '') + (odd.length ? (before.length ? ', and' : ':') + ' reflections past it at ' + odd.slice(0, 3).map((r) => mft(r.reflection.distance, 2) + '').join(', ') + ' are not repeats of it' : '') + '. The real end may be hidden. Check the connector at the board.';
+      }
+    } else rows.forEach((r) => { if (endM > 0 && r.reflection.distance > cut) r.echo = true; });
+    // Live view: a reflection right on the short / resistive boundary flips label from frame to frame with noise. Keep last
+    // frame's label for the same spot (±0.3 m, same sign) unless the step has moved clearly past the boundary.
+    const SG = -0.7, HYST = 0.06;
+    if (S.live && S.prevKinds) rows.forEach((r) => {
+      const q = r.reflection; if (!(q.delta < 0) || Math.abs(q.delta - SG) >= HYST) return;
+      const prev = S.prevKinds.find((p) => Math.abs(p.d - q.distance) <= 0.3 && p.neg);
+      if (prev && (prev.kind.startsWith('SHORT') || prev.kind.startsWith('RESISTIVE'))) q.kind = prev.kind;
+    });
+    S.prevKinds = rows.map((r) => ({ d: r.reflection.distance, neg: r.reflection.delta < 0, kind: r.reflection.kind }));
     rows.forEach((r) => {
       // with a reference subtracted, a negative step at a wire end means that end's normal echo has disappeared
       if (S.ref && r.reflection.delta < 0 && !r.junction) { const l = Object.keys(S.net.leaves).find((n) => Math.abs(r.reflection.distance * 1000 - S.net.leaves[n]) <= tol); if (l) { r.lostEnd = l; const own = r.candidates.filter((c) => c.segment === S.net.parent[l].seg); if (own.length) r.candidates = own; } }
@@ -107,13 +167,51 @@
     return rows;
   }
 
+  /** D2: is the line shorted or open right at the board? Looks at the level 4-8 ns after the launch (about the first
+   *  0.4 m) against the full open-circuit step (Setup, "Open-circuit step"). Returns null for a normal capture. */
+  function connectorState(raw) {
+    const v = raw.v, n = v.length; if (!v || n < 120) return null;
+    const full = +S.cfg.openStepV > 0 ? +S.cfg.openStepV : 2.4;
+    // Short at the connector: the pulse is cancelled at once, so nothing stays high for more than a few samples
+    // (the board's pre-launch pulses and the launch spike are all under ~8 samples, about 0.4 m).
+    const srt = Float64Array.from(v).sort(), lo = srt[Math.floor(n * 0.05)], thr = lo + 0.2 * full;
+    let run = 0, longest = 0; for (let i = 0; i < n; i++) { if (v[i] > thr) { run++; if (run > longest) longest = run; } else run = 0; }
+    if (longest < 9) return { kind: 'short', ratio: 0, step: 0 };
+    let L = null;
+    try { L = T.findLaunch(Float64Array.from(raw.t, (x) => x / S.cfg.scale), v, engCfg()).launch; } catch (e) { L = null; }
+    if (L == null) { let best = -Infinity; for (let i = 2; i < n - 3; i++) { const d = v[i + 2] - v[i - 1]; if (d > best) { best = d; L = i; } } }
+    if (L == null || L < 12 || L + 9 >= n) return null;
+    const before = T.median(Float64Array.from(v.slice(Math.max(0, L - 40), L - 4)));
+    const after = T.median(Float64Array.from(v.slice(L + 4, L + 9)));
+    const ratio = (after - before) / full;
+    if (ratio < 0.2) return { kind: 'short', ratio, step: after - before };
+    if (ratio > 0.85) return { kind: 'open', ratio, step: after - before };
+    return null;
+  }
+  function connHtml(c) {
+    const pct = Math.round(c.ratio * 100) + '% of the open-circuit step';
+    return c.kind === 'short'
+      ? '<div><h3><span class="badge short">Short circuit</span>at the connector</h3><p>The pulse is cancelled right at the board, within about 0.4 m. Either the leads are touching each other or ground, or the circuit is shorted very close to the test point. (' + pct + '.)</p></div>'
+      : '<div><h3><span class="badge open">No cable detected</span>open at the connector</h3><p>The board sees an open right at the connector, so nothing is connected. Check that the wires are in the lever connector with the levers pushed down, and that the clip leads are on the circuit. (' + pct + '.)</p></div>';
+  }
+
   function analyze(fresh) {
     if (!S.raw || !S.net) return;
     if (!S.live) $('devErr').textContent = '';
     try {
-      const R = runAnalysis(S.raw); R.rows = makeRows(R); R.when = new Date(); S.result = R;
+      const conn = connectorState(S.raw);
+      let R;
+      try { R = runAnalysis(S.raw); } catch (e) { if (!conn) throw e; R = null; }
+      if (!R) {                                           // D2: nothing analyzable, but we know why: say so instead of an error
+        S.result = { conn, rows: [], when: new Date() };
+        const v = $('verdict'); v.className = 'verdict'; v.innerHTML = connHtml(conn); $('tableWrap').innerHTML = '';
+        setCapturing(false); if (fresh) toast(conn.kind === 'short' ? 'Short at the connector' : 'No cable detected');
+        if (S.calPending) { S.calPending = false; $('calOut').textContent = 'Nothing usable is connected, so there is nothing to calibrate on.'; }
+        return;
+      }
+      R.conn = conn; R.rows = makeRows(R); R.when = new Date(); S.result = R;
       renderAll(); setCapturing(false);
-      if (fresh) { const f = R.rows.filter((r) => r.kind !== 'eol' && r.kind !== 'feat'); toast(f.length ? 'Fault found at ' + f[0].reflection.distance.toFixed(2) + ' m' : 'No fault found'); pushHistory(); }
+      if (fresh) { const f = R.rows.filter((r) => r.kind !== 'eol' && r.kind !== 'feat'); toast(conn ? (conn.kind === 'short' ? 'Short at the connector' : 'No cable detected') : f.length ? 'Fault found at ' + mft(f[0].reflection.distance, 2) + '' : 'No fault found'); pushHistory(); }
       if (S.calPending) { S.calPending = false; doCal(); }
     } catch (e) {
       $('devErr').textContent = e.message; setCapturing(false);
@@ -130,7 +228,7 @@
     for (let i = 0; i < t.length; i++) { if (t[i] < a.t0) continue; x.push(T.timeToDistance(t[i] - a.t0, vp)); rho.push(a.rho[i]); volt.push(R.v[i]); if (R.refV) refv.push(R.refV[i]); }
     const xs = Float64Array.from(x); let dMax = Math.max(1, S.net.lengthM * 1.3);
     R.rows.forEach((r) => { dMax = Math.max(dMax, r.reflection.distance * 1.15 + .2); }); dMax = Math.min(dMax, xs[xs.length - 1] || dMax);
-    chart.setVp(vp); chart.setBlind(T.timeToDistance(S.cfg.rise * 1e-9 * 3, vp));
+    chart.setVp(vp); chart.setBlind(Math.max(T.timeToDistance(S.cfg.rise * 1e-9 * 3, vp), +S.cfg.ignoreM || 0));
     let cmpRho = null, cmpVolt = null;
     if (S.cmp) {
       try {
@@ -142,7 +240,7 @@
     chart.setData({ x: xs, rho: Float64Array.from(rho), volt: Float64Array.from(volt), refVolt: R.refV ? Float64Array.from(refv) : null, cmpRho, cmpVolt });
     chart.setDomain(0, dMax);
     chart.setEnds(Object.entries(S.net.leaves).map(([n, d]) => ({ x: d / 1000, label: n })));
-    chart.setMarkers(R.rows.map((r) => ({ x: r.reflection.distance, kind: r.kind, primary: primary(R.rows) === r, label: r.reflection.distance.toFixed(2) + ' m' })));
+    chart.setMarkers(R.rows.map((r) => ({ x: r.reflection.distance, kind: r.kind, primary: primary(R.rows) === r, label: mft(r.reflection.distance, 2) + '' })));
     $('scopeEmpty').hidden = true;
   }
   function bandPoly(dMm) {
@@ -160,21 +258,43 @@
   }
   function renderVerdict() {
     const R = S.result, v = $('verdict'); if (!R) return;
+    if (R.conn) { v.className = 'verdict'; v.innerHTML = connHtml(R.conn); return; }
+    renderVerdictInner(R, v);
+    if (S.netName === BENCH && !S.benchAuto) {
+      const L = R.cableM, E = R.expectedM, ft = (m) => (m / 0.3048).toFixed(1);
+      v.insertAdjacentHTML('afterbegin', '<p class="cablelen">' + (L == null ? (R.cableShortM ? 'The pulse is stopped by a dead short at ' + mft(R.cableShortM, 2) + ', so the far end of the cable cannot be seen.' : 'No clear far end found within ' + (+S.cfg.maxRangeM || 35) + ' m.')
+        : R.earlyEndM ? '<b>Cable ends early.</b> Measured length ' + L.toFixed(2) + ' m (' + ft(L) + ' ft), but it should be ' + E.toFixed(2) + ' m (' + ft(E) + ' ft): it stops ' + mft(R.earlyEndM, 2) + ' short, so there is an open/break at ' + L.toFixed(2) + ' m.'
+        : R.lateEndM ? '<b>Longer than expected.</b> Measured ' + L.toFixed(2) + ' m (' + ft(L) + ' ft) vs the ' + E.toFixed(2) + ' m (' + ft(E) + ' ft) entered. Check the velocity factor (' + S.cfg.vp + ') or the length.'
+        : 'Measured length ' + L.toFixed(2) + ' m (' + ft(L) + ' ft) matches the expected ' + E.toFixed(2) + ' m (' + ft(E) + ' ft).') + (R.cableWarn ? ' ' + esc(R.cableWarn) : '') + '</p>');
+    }
+    if (S.netName === BENCH && S.benchAuto) {
+      const L = R.cableM;
+      v.insertAdjacentHTML('afterbegin', '<p class="cablelen">' + (L ? (R.cableWarn ? '<b>Length uncertain.</b> First full open at ' + L.toFixed(2) + ' m (' + (L / 0.3048).toFixed(1) + ' ft). ' + esc(R.cableWarn) : 'Measured cable length: <b>' + L.toFixed(2) + ' m (' + (L / 0.3048).toFixed(1) + ' ft)</b>. Accurate only if the velocity factor (' + S.cfg.vp + ') is right for this cable.') : R.cableShortM ? 'The pulse is stopped by a dead short at ' + mft(R.cableShortM, 2) + ', so the length of the cable beyond it cannot be measured.' : 'No clear far end found, so the cable length could not be measured.') + '</p>');
+    }
+  }
+  function renderVerdictInner(R, v) {
     const p = primary(R.rows);
+    if (!p && S.netName === BENCH && S.benchAuto && R.cableM) {
+      // Bench cable with no length entered: the far end IS an open, so say so instead of "No fault found".
+      const L = R.cableM, end = R.rows.find((r) => r.cableEnd);
+      v.className = 'verdict';
+      v.innerHTML = '<div class="readout">' + L.toFixed(2) + '<small>m</small>' + '<small style="display:block;font-size:.4em;opacity:.8">' + (L / 0.3048).toFixed(1) + ' ft</small>' + '</div><div><h3><span class="badge open">Open circuit</span>at the end of the cable</h3><p>The pulse reflects back at full strength here: the wire ends (or is broken) ' + L.toFixed(2) + ' m (' + (L / 0.3048).toFixed(1) + ' ft) from the test point.' + (end ? ' Reflection step +' + end.reflection.delta.toFixed(2) + '.' : '') + ' Nothing before it is above the reporting threshold.</p></div>';
+      return;
+    }
     if (!p) {
       const minor = R.rows.filter((r) => r.kind === 'feat').length;
       v.className = 'verdict clean'; v.innerHTML = '<div><h3><span class="badge eol">Clear</span>No fault found on ' + esc(S.netName) + '</h3><p>' + (R.rows.some((r) => r.kind === 'eol') ? 'Only the expected reflection from the far end of the circuit was seen.' : 'No reflection above the reporting threshold.') +
-        (minor ? ' ' + minor + ' minor feature' + (minor > 1 ? 's' : '') + ' (connectors or splices) listed below.' : '') + ' A fault closer than ' + T.timeToDistance(S.cfg.rise * 3e-9, S.cfg.vp).toFixed(2) + ' m to the test point is inside the blind zone and cannot be seen.</p></div>';
+        (minor ? ' ' + minor + ' minor feature' + (minor > 1 ? 's' : '') + ' (connectors or splices) listed below.' : '') + ' A fault closer than ' + mft(T.timeToDistance(S.cfg.rise * 3e-9, S.cfg.vp)) + ' to the test point is inside the blind zone and cannot be seen.</p></div>';
       return;
     }
     const r = p.reflection, [title, why] = titleOf(p), c = p.shown || p.candidates, br = p.branch;
     let loc;
-    if (!c.length) loc = 'No point on ' + esc(S.netName) + ' is ' + r.distance.toFixed(2) + ' m from the test point. Check the circuit selection and the velocity factor.';
+    if (!c.length) loc = 'No point on ' + esc(S.netName) + ' is ' + mft(r.distance, 2) + ' from the test point. Check the circuit selection and the velocity factor.';
     else if (c.length === 1) loc = 'On wire segment <b>' + esc(c[0].segment) + '</b>, ' + Math.round(c[0].intoMm) + ' mm along from ' + esc(c[0].fromNode) + ' toward ' + esc(c[0].toNode) + '.<br>Vehicle position X ' + Math.round(c[0].xyz[0]) + ', Y ' + Math.round(c[0].xyz[1]) + ', Z ' + Math.round(c[0].xyz[2]) + ' mm. Search ±' + S.cfg.zone + ' mm along the wire.';
     if (br && br.segment && c.length === 1) loc = 'The circuit branches here. The fault is on the branch to <b>' + esc(br.leaves.join(', ')) + '</b>, because the echo from the end of that wire has disappeared while the other branch still shows its own.<br>' + loc + '<br><span class="ruled">Ruled out: ' + esc(br.others.join(', ')) + '.</span>';
     else if (c.length > 1) loc = 'The circuit branches here, so the fault could be on any of ' + c.length + ' wires: ' + c.map((q) => '<b>' + esc(q.segment) + '</b> (' + Math.round(q.intoMm) + ' mm past ' + esc(q.fromNode) + ')').join(', ') + '. Check each marked branch.' + (br && br.reason ? '<br><span class="ruled">' + esc(br.reason) + '</span>' : '');
     v.className = 'verdict';
-    v.innerHTML = '<div class="readout">' + r.distance.toFixed(2) + '<small>m</small></div>' +
+    v.innerHTML = '<div class="readout">' + r.distance.toFixed(2) + '<small>m</small>' + '<small style="display:block;font-size:.4em;opacity:.8">' + (r.distance / 0.3048).toFixed(1) + ' ft</small>' + '</div>' +
       '<div><h3><span class="badge ' + p.kind + '">' + esc(title) + '</span>from the test point</h3><p>' + esc(why) + ' Reflection step ' + (r.delta >= 0 ? '+' : '') + r.delta.toFixed(2) + ', impedance about ' + fmtZ(r.z) + '.</p><p class="where">' + loc + '</p></div>' +
       '<div class="acts"><button class="btn primary" id="vShow">Show on car</button><button class="btn" id="vCopy">Copy report</button><button class="btn" id="vSave">Save report</button><button class="btn" id="vPrint">Print report</button></div>';
     $('vShow').onclick = () => showOnCar(R.rows.indexOf(p) + 1); $('vCopy').onclick = copyReport; $('vSave').onclick = saveReport; $('vPrint').onclick = printReport;
@@ -184,12 +304,12 @@
     if (!R.rows.length) { w.innerHTML = ''; return; }
     const lab = { open: 'Fault', short: 'Fault', res: 'Fault', highz: 'Fault', feat: 'Minor', eol: 'End of line' };
     w.innerHTML = '<table><thead><tr><th>#</th><th>Finding</th><th class="n">Distance</th><th class="n">Round trip</th><th class="n">Step</th><th class="n">Impedance</th><th>Location on circuit</th></tr></thead><tbody>' +
-      R.rows.map((r, i) => { const q = r.reflection, [t] = titleOf(r); return '<tr class="pick" data-i="' + (i + 1) + '"><td class="num">' + (i + 1) + '</td><td><span class="badge ' + r.kind + '">' + esc(t) + '</span></td><td class="n">' + q.distance.toFixed(3) + ' m</td><td class="n">' + (q.t * 1e9).toFixed(1) + ' ns</td><td class="n">' + (q.delta >= 0 ? '+' : '') + q.delta.toFixed(2) + '</td><td class="n">' + fmtZ(q.z) + '</td><td>' + (r.candidates.length ? (r.shown || r.candidates).map((c) => esc(where(c))).join('<br>') + (r.branch && r.branch.segment ? '<br><span class="hint">ruled out: ' + esc(r.branch.others.join(', ')) + '</span>' : '') : '<span class="hint">not on this circuit</span>') + '</td></tr>'; }).join('') + '</tbody></table>';
+      R.rows.map((r, i) => { const q = r.reflection, [t] = titleOf(r); return '<tr class="pick" data-i="' + (i + 1) + '"><td class="num">' + (i + 1) + '</td><td><span class="badge ' + r.kind + '">' + esc(t) + '</span></td><td class="n">' + mft(q.distance, 3) + '</td><td class="n">' + (q.t * 1e9).toFixed(1) + ' ns</td><td class="n">' + (q.delta >= 0 ? '+' : '') + q.delta.toFixed(2) + '</td><td class="n">' + fmtZ(q.z) + '</td><td>' + (r.candidates.length ? (r.shown || r.candidates).map((c) => esc(where(c))).join('<br>') + (r.branch && r.branch.segment ? '<br><span class="hint">ruled out: ' + esc(r.branch.others.join(', ')) + '</span>' : '') : '<span class="hint">not on this circuit</span>') + '</td></tr>'; }).join('') + '</tbody></table>';
     w.querySelectorAll('tr.pick').forEach((tr) => { tr.onclick = () => showOnCar(+tr.dataset.i); });
   }
   function renderLocList() {
     const R = S.result, el = $('locList'); if (!R || !R.rows.length) { el.innerHTML = '<p class="hint">' + (R ? 'No reflections to show.' : 'Take a measurement and the fault location is marked here.') + '</p>'; return; }
-    el.innerHTML = R.rows.map((r, i) => { const q = r.reflection, [t] = titleOf(r); return '<div class="fitem ' + (r.kind === 'eol' ? 'eol' : r.kind === 'feat' ? 'feat' : '') + '" data-i="' + (i + 1) + '" style="' + (r.kind === 'eol' || r.kind === 'feat' ? '' : 'border-color:var(--' + r.kind + ')') + '"><b>#' + (i + 1) + ' ' + esc(t) + ', ' + q.distance.toFixed(2) + ' m</b><small>' + (r.candidates.length ? (r.shown || r.candidates).map((c) => esc(where(c)) + '<br>XYZ ' + c.xyz.map(Math.round).join(', ') + ' mm').join('<br>') : 'not on this circuit') + '</small></div>'; }).join('');
+    el.innerHTML = R.rows.map((r, i) => { const q = r.reflection, [t] = titleOf(r); return '<div class="fitem ' + (r.kind === 'eol' ? 'eol' : r.kind === 'feat' ? 'feat' : '') + '" data-i="' + (i + 1) + '" style="' + (r.kind === 'eol' || r.kind === 'feat' ? '' : 'border-color:var(--' + r.kind + ')') + '"><b>#' + (i + 1) + ' ' + esc(t) + ', ' + mft(q.distance, 2) + '</b><small>' + (r.candidates.length ? (r.shown || r.candidates).map((c) => esc(where(c)) + '<br>XYZ ' + c.xyz.map(Math.round).join(', ') + ' mm').join('<br>') : 'not on this circuit') + '</small></div>'; }).join('');
     el.querySelectorAll('.fitem').forEach((d) => { d.onclick = () => viewer && viewer.flyFault(+d.dataset.i); });
   }
   function renderAll() {
@@ -207,8 +327,8 @@
   }
   function reportText() {
     const o = reportObj(), L = ['TDR fault report', 'Circuit: ' + o.circuit, 'Source: ' + (o.source || 'n/a'), 'Velocity factor: ' + o.velocityFactor, ''];
-    if (o.primaryFault) { const f = o.primaryFault; L.push('Fault: ' + f.type + ' at ' + f.distanceM.toFixed(3) + ' m from the test point'); f.locations.forEach((l) => L.push('  ' + l.segment + ', ' + l.mmAlong + ' mm along, XYZ ' + l.xyzMm.join(', ') + ' mm')); } else L.push('No fault found.');
-    L.push('', 'All reflections:'); o.reflections.forEach((r, i) => L.push((i + 1) + '. ' + r.finding + ', ' + r.distanceM.toFixed(3) + ' m, step ' + r.step)); return L.join('\n');
+    if (o.primaryFault) { const f = o.primaryFault; L.push('Fault: ' + f.type + ' at ' + mft(f.distanceM, 3) + ' from the test point'); f.locations.forEach((l) => L.push('  ' + l.segment + ', ' + l.mmAlong + ' mm along, XYZ ' + l.xyzMm.join(', ') + ' mm')); } else L.push('No fault found.');
+    L.push('', 'All reflections:'); o.reflections.forEach((r, i) => L.push((i + 1) + '. ' + r.finding + ', ' + mft(r.distanceM, 3) + ', step ' + r.step)); return L.join('\n');
   }
   function copyReport() {
     const t = reportText();
@@ -223,7 +343,7 @@
   let histId = 0;
   function pushHistory() {
     const R = S.result; if (!R || !S.raw) return; const p = primary(R.rows);
-    S.hist.unshift({ id: ++histId, when: R.when, label: S.label || 'capture', net: S.netName, raw: { t: S.raw.t, v: S.raw.v }, kind: p ? p.kind : 'eol', text: p ? titleOf(p)[0] + ' at ' + p.reflection.distance.toFixed(2) + ' m' : 'No fault found' });
+    S.hist.unshift({ id: ++histId, when: R.when, label: S.label || 'capture', net: S.netName, raw: { t: S.raw.t, v: S.raw.v }, kind: R.conn ? R.conn.kind : p ? p.kind : 'eol', text: R.conn ? (R.conn.kind === 'short' ? 'Short at the connector' : 'No cable detected') : p ? titleOf(p)[0] + ' at ' + mft(p.reflection.distance, 2) + '' : 'No fault found' });
     if (S.hist.length > 12) { const gone = S.hist.pop(); if (S.cmp === gone) S.cmp = null; }
     renderHist();
   }
@@ -256,7 +376,7 @@
     Object.keys(S.net.nodeDist).forEach((n) => { const q = S.harness.nodes[n]; g.beginPath(); g.arc(X(q[0]), Y(q[1]), 7, 0, 7); g.fill(); g.fillText(n + (n === S.net.root ? ' (test point)' : ''), X(q[0]) + 12, Y(q[1]) - 12); });
     S.result.rows.forEach((r, i) => { if (r.kind === 'eol' || r.kind === 'feat') return; (r.shown || r.candidates).forEach((c) => {
       g.strokeStyle = '#d6342f'; g.lineWidth = 5; g.beginPath(); g.arc(X(c.xyz[0]), Y(c.xyz[1]), 18, 0, 7); g.stroke();
-      g.fillStyle = '#d6342f'; g.font = 'bold 24px Arial'; g.fillText('#' + (i + 1) + '  ' + r.reflection.distance.toFixed(2) + ' m', X(c.xyz[0]) + 26, Y(c.xyz[1]) + 34); g.fillStyle = '#000'; g.font = '22px Arial'; }); });
+      g.fillStyle = '#d6342f'; g.font = 'bold 24px Arial'; g.fillText('#' + (i + 1) + '  ' + mft(r.reflection.distance, 2) + '', X(c.xyz[0]) + 26, Y(c.xyz[1]) + 34); g.fillStyle = '#000'; g.font = '22px Arial'; }); });
     return cv.toDataURL('image/png');
   }
   function printReport() {
@@ -265,11 +385,11 @@
     let plan = ''; try { plan = planImage(); } catch (e) { plan = ''; }
     const locs = (r) => (r.shown || r.candidates).map((c) => esc(where(c)) + ' (X ' + c.xyz.map(Math.round).join(', ') + ' mm)').join('<br>') || 'not on this circuit';
     el.innerHTML = '<h1>TDR fault report</h1><div class="meta">' + esc(R.when.toLocaleString()) + ' &middot; Circuit ' + esc(S.netName) + ' &middot; Source: ' + esc(S.label || 'n/a') + '</div>' +
-      '<h2>Result</h2>' + (p ? '<div class="big">' + esc(titleOf(p)[0]) + ' at ' + p.reflection.distance.toFixed(2) + ' m from the test point</div><div>' + esc(titleOf(p)[1]) + '</div><div>' + locs(p) + '</div>' + (p.branch && p.branch.segment ? '<div>Branch identified from the missing end echo of ' + esc(p.branch.leaves.join(', ')) + '. Ruled out: ' + esc(p.branch.others.join(', ')) + '.</div>' : '') + '<div>Search &plusmn;' + S.cfg.zone + ' mm along the wire.</div>' : '<div class="big">No fault found</div>') +
+      '<h2>Result</h2>' + (p ? '<div class="big">' + esc(titleOf(p)[0]) + ' at ' + mft(p.reflection.distance, 2) + ' from the test point</div><div>' + esc(titleOf(p)[1]) + '</div><div>' + locs(p) + '</div>' + (p.branch && p.branch.segment ? '<div>Branch identified from the missing end echo of ' + esc(p.branch.leaves.join(', ')) + '. Ruled out: ' + esc(p.branch.others.join(', ')) + '.</div>' : '') + '<div>Search &plusmn;' + S.cfg.zone + ' mm along the wire.</div>' : '<div class="big">No fault found</div>') +
       (scope ? '<h2>Reflection trace</h2><img src="' + scope + '" alt="Reflection trace">' : '') +
       (plan ? '<h2>Location on the circuit (top view)</h2><img src="' + plan + '" alt="Top view of the circuit with the fault marked">' : '') +
       '<h2>All reflections</h2><table><tr><th>#</th><th>Finding</th><th>Distance</th><th>Round trip</th><th>Step</th><th>Impedance</th><th>Location</th></tr>' +
-      R.rows.map((r, i) => '<tr><td>' + (i + 1) + '</td><td>' + esc(titleOf(r)[0]) + '</td><td>' + r.reflection.distance.toFixed(3) + ' m</td><td>' + (r.reflection.t * 1e9).toFixed(1) + ' ns</td><td>' + (r.reflection.delta >= 0 ? '+' : '') + r.reflection.delta.toFixed(2) + '</td><td>' + fmtZ(r.reflection.z) + '</td><td>' + locs(r) + '</td></tr>').join('') + '</table>' +
+      R.rows.map((r, i) => '<tr><td>' + (i + 1) + '</td><td>' + esc(titleOf(r)[0]) + '</td><td>' + mft(r.reflection.distance, 3) + '</td><td>' + (r.reflection.t * 1e9).toFixed(1) + ' ns</td><td>' + (r.reflection.delta >= 0 ? '+' : '') + r.reflection.delta.toFixed(2) + '</td><td>' + fmtZ(r.reflection.z) + '</td><td>' + locs(r) + '</td></tr>').join('') + '</table>' +
       '<h2>Settings</h2><table><tr><th>Velocity factor</th><td>' + S.cfg.vp + '</td><th>Line impedance</th><td>' + S.cfg.z0 + ' &Omega;</td></tr><tr><th>Time stretch</th><td>' + S.cfg.scale + '</td><th>Edge rise time</th><td>' + S.cfg.rise + ' ns</td></tr><tr><th>Reference used</th><td>' + (S.ref ? esc(S.ref.name) : 'none') + '</td><th>Fault threshold</th><td>' + S.cfg.faultThr + '</td></tr></table>';
     const imgs = [...el.querySelectorAll('img')];
     Promise.all(imgs.map((im) => (im.complete ? 0 : new Promise((ok) => { im.onload = im.onerror = ok; })))).then(() => window.print());
@@ -362,7 +482,7 @@
   }
 
   /* ---------------------------------------------------------------- setup bindings */
-  const BIND = [['sVp', 'vp'], ['sZ0', 'z0'], ['sRise', 'rise'], ['sMin', 'minStep'], ['sFault', 'faultThr'], ['sScale', 'scale'], ['sZone', 'zone'], ['dProto', 'proto'], ['dBaud', 'baud'], ['dAvg', 'avg'], ['dInt', 'interval'], ['dCmd', 'cmd'], ['dVal', 'valueMode'], ['dBits', 'bits'], ['dVref', 'vref'], ['dDt', 'dt'], ['dUnit', 'timeUnit'], ['qVp', 'vp'], ['qScale', 'scale']];
+  const BIND = [['sVp', 'vp'], ['sZ0', 'z0'], ['sRise', 'rise'], ['sMin', 'minStep'], ['sFault', 'faultThr'], ['sScale', 'scale'], ['sZone', 'zone'], ['sMaxR', 'maxRangeM'], ['sOpenV', 'openStepV'], ['dProto', 'proto'], ['dBaud', 'baud'], ['dAvg', 'avg'], ['dInt', 'interval'], ['dCmd', 'cmd'], ['dVal', 'valueMode'], ['dBits', 'bits'], ['dVref', 'vref'], ['dDt', 'dt'], ['dUnit', 'timeUnit'], ['qVp', 'vp'], ['qScale', 'scale']];
   function syncInputs() {
     BIND.forEach(([id, k]) => { const el = $(id); if (el && document.activeElement !== el) el.value = S.cfg[k]; });
     $('sAdj').checked = !!S.cfg.reanalyze; $('oZone').value = S.cfg.zone; $('oZoneVal').textContent = S.cfg.zone;
@@ -401,6 +521,20 @@
     $('btnTypeDel').onclick = () => { const n = $('cType').value; store.set('wires', store.get('wires', []).filter((x) => x.name !== n)); renderWires(''); };
     renderWires('');
     $('selNet').addEventListener('change', (e) => { try { selectNet(e.target.value); } catch (er) { toast(er.message); } });
+    $('benchFt').value = S.cfg.benchFt;
+    const benchNote = () => { $('benchM').textContent = +S.cfg.benchFt > 0 ? '= ' + (S.cfg.benchFt * 0.3048).toFixed(3) + ' m' : 'Blank: the length is measured from the trace.'; };
+    $('benchFt').addEventListener('change', (e) => {
+      const raw = e.target.value.trim(), v = parseFloat(raw);
+      if (raw !== '' && !(v > 0.3 && v < 2000)) { e.target.value = S.cfg.benchFt; return; }
+      S.cfg.benchFt = raw === '' ? '' : v; save(); addBench(S.harness); selectNet(BENCH); benchNote();
+    });
+    benchNote();
+    $('ignoreM').value = S.cfg.ignoreM || '';
+    $('ignoreM').addEventListener('change', (e) => {
+      const raw = e.target.value.trim(), v = raw === '' ? 0 : parseFloat(raw);
+      if (!(v >= 0 && v < 20)) { e.target.value = S.cfg.ignoreM || ''; return; }
+      S.cfg.ignoreM = v; save(); if (S.raw) analyze();
+    });
     $('btnHarnessFile').onclick = () => $('fileHarness').click();
     $('fileHarness').onchange = async (e) => { const f = e.target.files[0]; if (!f) return; $('harnessText').value = await f.text(); applyHarness(); e.target.value = ''; };
     $('btnHarnessApply').onclick = applyHarness;
